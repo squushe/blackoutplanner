@@ -1,0 +1,33 @@
+{
+  "seed": 20261115,
+  "repeats": 3,
+  "python": "3.13.7",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "cases": 48,
+  "categories": {
+    "sequential": {
+      "greedy": {
+        "completed": 110,
+        "weight": 466,
+        "median_ms": 7.1711
+      },
+      "dp": {
+        "completed": 162,
+        "weight": 594,
+        "median_ms": 7.302
+      }
+    },
+    "household": {
+      "greedy": {
+        "completed": 213,
+        "weight": 665,
+        "median_ms": 8.1507
+      },
+      "dp": {
+        "completed": 213,
+        "weight": 665,
+        "median_ms": 8.0723
+      }
+    }
+  }
+}
