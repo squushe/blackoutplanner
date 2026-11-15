@@ -329,3 +329,30 @@ def test_window_sizing_respects_work_area_and_monitor_origin(app, bounds):
 def test_startup_window_fits_available_screen(app, workspace_window):
     window, _, _, _, _ = workspace_window
     assert window.screen().availableGeometry().contains(window.frameGeometry())
+
+
+def test_main_window_and_navigation_fit_tiny_work_area(app, workspace_window):
+    window, _, _, _, _ = workspace_window
+    bounds = QRect(0, 0, 480, 360)
+    fit_window(window, bounds=bounds)
+    app.processEvents()
+    assert bounds.contains(window.frameGeometry())
+    assert window.sidebar.rect().contains(window.nav_group.button(5).geometry())
+
+
+def test_onboarding_fits_small_screen(app, tmp_path):
+    store = Store(tmp_path / "small-wizard.sqlite3")
+    wizard = Onboarding(store, lambda: datetime.now(ZoneInfo("Europe/Kyiv")))
+    bounds = QRect(0, 0, 640, 480)
+    fit_window(wizard, (1000, 720), (480, 360), bounds)
+    wizard.show()
+    app.processEvents()
+    assert bounds.contains(wizard.frameGeometry())
+    wizard.schedule.editor.week = [[True] * 48 for _ in range(7)]
+    for _ in range(3):
+        wizard.next()
+        app.processEvents()
+        assert bounds.contains(wizard.frameGeometry())
+    wizard.reject()
+    wizard.deleteLater()
+    store.close()
