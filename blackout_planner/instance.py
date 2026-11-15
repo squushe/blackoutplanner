@@ -28,8 +28,7 @@ class SingleInstance(QObject):
                 socket = QLocalSocket()
                 socket.connectToServer(self.name)
                 if socket.waitForConnected(500):
-                    socket.write(b"show")
-                    socket.waitForBytesWritten(500)
+                    socket.waitForReadyRead(1000)
                     socket.disconnectFromServer()
             return False
         QLocalServer.removeServer(self.name)
@@ -41,14 +40,12 @@ class SingleInstance(QObject):
     def accept(self):
         while self.server.hasPendingConnections():
             socket = self.server.nextPendingConnection()
-            socket.readyRead.connect(lambda socket=socket: self.read(socket))
-            socket.disconnected.connect(socket.deleteLater)
-            if socket.bytesAvailable():
-                self.read(socket)
-
-    def read(self, socket):
-        if b"show" in bytes(socket.readAll()):
             self.activated.emit()
+            socket.write(b"ok")
+            socket.flush()
+            socket.waitForBytesWritten(200)
+            socket.disconnectFromServer()
+            socket.deleteLater()
 
     def release(self):
         self.server.close()

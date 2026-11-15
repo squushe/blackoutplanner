@@ -1,16 +1,18 @@
+import gc
 import os
 import time
-import gc
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QThreadPool, QCoreApplication, QEvent
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, Qt, QThreadPool
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
-from blackout_planner.domain import Device
+from blackout_planner.domain import Device, Task
+from blackout_planner.instance import SingleInstance
 from blackout_planner.storage import Store, import_week
 from blackout_planner.ui import (
     DeviceDialog,
@@ -109,3 +111,184 @@ def test_window_calculates_and_displays_imported_schedule(app, tmp_path):
     window.allow_exit = True
     window.close()
     store.close()
+
+
+@pytest.fixture
+def workspace_window(app, tmp_path):
+    store = Store(tmp_path / "planner.sqlite3")
+    store.set("week", [[True] * 48 for _ in range(7)])
+    device = Device("Пристрій", power=100, interruptible=True)
+    store.save(device)
+    clock = {"now": datetime(2026, 11, 16, 12, tzinfo=ZoneInfo("Europe/Kyiv"))}
+    task = Task(
+        device.id,
+        "Побутова задача",
+        60,
+        (clock["now"] + timedelta(hours=6)).isoformat(),
+        interruptible=True,
+    )
+    store.save(task)
+    window = MainWindow(store, lambda: clock["now"])
+    window.timer.stop()
+    window.show()
+    wait_plan(app, window)
+    yield window, store, device, task, clock
+    QThreadPool.globalInstance().waitForDone()
+    app.processEvents()
+    window.allow_exit = True
+    window.close()
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    store.close()
+
+
+def test_dragging_timeline_persists_and_unlocks(app, workspace_window):
+    window, store, _, task, _ = workspace_window
+    timeline = window.timeline
+    app.processEvents()
+    rect, segment = timeline.hits[0]
+    begin = rect.center().toPoint()
+    delta = round((timeline.width() - 150) / 24)
+    end = begin + QPoint(delta, 0)
+    QTest.mousePress(timeline, Qt.MouseButton.LeftButton, pos=begin)
+    QTest.mouseMove(timeline, end)
+    QTest.mouseRelease(timeline, Qt.MouseButton.LeftButton, pos=end)
+    wait_plan(app, window)
+    locked = store.tasks()[0]
+    assert locked.locked_segments
+    assert datetime.fromisoformat(locked.locked_segments[0][0]) == segment.start + timedelta(
+        hours=1
+    )
+    window.unlock_task(locked)
+    wait_plan(app, window)
+    assert not store.tasks()[0].locked_segments
+
+
+def test_invalid_drag_does_not_change_task(app, workspace_window, monkeypatch):
+    window, store, _, _, _ = workspace_window
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[-1]))
+    window.move_segment(window.plan.segments[0], -60)
+    assert warnings
+    assert not store.tasks()[0].locked_segments
+
+
+def test_emergency_outage_pauses_and_replans_remainder(app, workspace_window):
+    window, store, _, task, clock = workspace_window
+    window.task_action(task, "running")
+    wait_plan(app, window)
+    clock["now"] += timedelta(minutes=10)
+    window.apply_power_change(
+        {
+            "start": clock["now"].isoformat(),
+            "end": (clock["now"] + timedelta(hours=1)).isoformat(),
+            "power": False,
+        }
+    )
+    wait_plan(app, window)
+    saved = store.tasks()[0]
+    assert saved.status == "paused" and saved.completed == 10
+    assert window.plan.segments[0].start == clock["now"] + timedelta(hours=1)
+
+
+def test_reserve_panel_changes_actual_plan(app, workspace_window):
+    window, store, _, _, _ = workspace_window
+    store.set("week", [[False] * 48 for _ in range(7)])
+    panel = window.reserve_panel
+    panel.enabled.setChecked(True)
+    panel.compatible.item(0).setCheckState(Qt.CheckState.Checked)
+    panel.simulation.item(0).setCheckState(Qt.CheckState.Checked)
+    panel.save()
+    wait_plan(app, window)
+    assert not window.plan.conflicts
+    assert window.plan.reserve_used_wh > 100
+    assert "автономність" in panel.result.text()
+
+
+def test_notification_history_prevents_duplicate_alerts(app, workspace_window):
+    window, store, _, _, clock = workspace_window
+    week = store.get("week")
+    week[0][25] = False
+    store.set("week", week)
+    window.startup_notice = False
+    window.last_check = clock["now"] - timedelta(seconds=30)
+    window.process_notices()
+    entries = store.get("notification_inbox")
+    count = len(entries)
+    assert any("Наближається" in entry["title"] for entry in entries)
+    window.last_check = clock["now"] - timedelta(seconds=30)
+    window.process_notices()
+    assert len(store.get("notification_inbox")) == count
+
+
+def test_resume_does_not_count_sleep_as_work(app, workspace_window):
+    window, store, _, task, clock = workspace_window
+    window.task_action(task, "running")
+    wait_plan(app, window)
+    window.last_tick = clock["now"] + timedelta(minutes=5)
+    clock["now"] += timedelta(hours=2)
+    window.tick()
+    wait_plan(app, window)
+    saved = store.tasks()[0]
+    assert saved.status == "paused" and saved.completed == 5
+
+
+def test_inbox_action_moves_current_task(app, workspace_window):
+    window, store, _, task, clock = workspace_window
+    window.handle_notice_action(task.id, "tomorrow")
+    wait_plan(app, window)
+    assert (
+        datetime.fromisoformat(store.tasks()[0].deadline).date()
+        == (clock["now"] + timedelta(days=1)).date()
+    )
+
+
+def test_confirmed_reserve_consumption_is_not_reused(app, workspace_window):
+    window, store, device, task, clock = workspace_window
+    store.set("week", [[False] * 48 for _ in range(7)])
+    store.set(
+        "battery",
+        dict(
+            capacity_wh=1000,
+            charge=80,
+            reserve=20,
+            output_w=500,
+            efficiency=1,
+            compatible_ids=[device.id],
+            enabled=True,
+        ),
+    )
+    window.task_action(task, "running")
+    wait_plan(app, window)
+    clock["now"] += timedelta(minutes=30)
+    snapshot = window.planning_arguments()
+    assert snapshot["battery"].charge == pytest.approx(75)
+    window.task_action(store.tasks()[0], "paused")
+    wait_plan(app, window)
+    assert store.get("battery")["charge"] == pytest.approx(75)
+    assert window.planning_arguments()["battery"].charge == pytest.approx(75)
+
+
+def test_single_instance_reopens_existing_process(app, tmp_path):
+    import subprocess
+    import sys
+
+    first = SingleInstance(tmp_path)
+    activations = []
+    first.activated.connect(lambda: activations.append(True))
+    assert first.acquire()
+    try:
+        code = (
+            "import sys; from pathlib import Path; from PySide6.QtCore import QCoreApplication; "
+            "from blackout_planner.instance import SingleInstance; app=QCoreApplication([]); "
+            "instance=SingleInstance(Path(sys.argv[1])); sys.exit(1 if instance.acquire() else 0)"
+        )
+        caller = subprocess.Popen([sys.executable, "-c", code, str(tmp_path)])
+        deadline = time.monotonic() + 5
+        while caller.poll() is None and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        assert activations
+        assert caller.wait(timeout=2) == 0
+    finally:
+        first.release()

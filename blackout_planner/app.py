@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from PySide6.QtCore import QStandardPaths, QThreadPool
+from PySide6.QtCore import QCoreApplication, QEvent, QStandardPaths, QThreadPool
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from .instance import SingleInstance
@@ -32,15 +32,15 @@ def main():
     if not instance.acquire(activate=not arguments.background):
         return
     store = Store(folder / "planner.sqlite3")
-    timezone = ZoneInfo(store.get("timezone", "Europe/Kyiv"))
 
     def now():
-        return datetime.now(timezone)
+        return datetime.now(ZoneInfo(store.get("timezone", "Europe/Kyiv")))
 
     if not store.get("onboarded", False):
         wizard = Onboarding(store, now)
         if wizard.exec() != QDialog.DialogCode.Accepted:
             store.close()
+            instance.release()
             return
     recovered = False
     for task in store.tasks():
@@ -64,6 +64,8 @@ def main():
         )
     app.exec()
     QThreadPool.globalInstance().waitForDone()
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     store.close()
     instance.release()
 

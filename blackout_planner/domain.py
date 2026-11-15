@@ -105,7 +105,8 @@ class BatteryProfile:
     def validate(self):
         if not (
             0 < self.capacity_wh <= 1000000
-            and 0 <= self.reserve <= self.charge <= 100
+            and 0 <= self.reserve <= 100
+            and 0 <= self.charge <= 100
             and 0 < self.output_w <= 100000
             and 0 < self.efficiency <= 1
         ):
@@ -113,7 +114,7 @@ class BatteryProfile:
 
     @property
     def usable_wh(self):
-        return self.capacity_wh * (self.charge - self.reserve) / 100
+        return self.capacity_wh * max(0, self.charge - self.reserve) / 100
 
     def autonomy_hours(self, power):
         self.validate()
@@ -134,6 +135,20 @@ def power_at(week, moment, overrides=()):
         ):
             return change["power"]
     return week[moment.weekday()][moment.hour * 2 + moment.minute // 30]
+
+
+def validate_overrides(overrides):
+    if not isinstance(overrides, list):
+        raise ValueError("Уточнення графіка мають бути списком")
+    for change in overrides:
+        begin, end = datetime.fromisoformat(change["start"]), datetime.fromisoformat(change["end"])
+        if (
+            begin.tzinfo is None
+            or end.tzinfo is None
+            or begin >= end
+            or type(change["power"]) is not bool
+        ):
+            raise ValueError("Некоректний інтервал уточнення живлення")
 
 
 def blank_week():
@@ -183,6 +198,7 @@ def build_plan(
     battery = battery or BatteryProfile()
     battery.validate()
     overrides = overrides or []
+    validate_overrides(overrides)
 
     start = minute_grid(now.astimezone(UTC))
     count = horizon_days * 1440

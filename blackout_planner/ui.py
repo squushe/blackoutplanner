@@ -4,6 +4,7 @@ import copy
 import json
 import math
 import sqlite3
+from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -48,6 +49,7 @@ from .notifications import Notice, build_notices, due_notices, upcoming_text
 from .notifier import Notifier
 from .panels import OutageDialog, ReservePanel
 from .platform_services import Autostart
+from .progress import progress_since_start
 from .storage import import_week
 
 STYLE = """
@@ -582,12 +584,12 @@ class Timeline(QWidget):
             local = value.astimezone(self.now.tzinfo)
             return left + width * ((local - day).total_seconds() / 86400)
 
-        for slot in range(48):
-            power = power_at(self.week, day + timedelta(minutes=slot * 30), self.overrides)
+        for slot in range(1440):
+            power = power_at(self.week, day + timedelta(minutes=slot), self.overrides)
             painter.fillRect(
-                int(left + width * slot / 48),
+                int(left + width * slot / 1440),
                 28,
-                math.ceil(width / 48),
+                math.ceil(width / 1440),
                 20,
                 QColor("#2d8d73" if power is True else "#455265"),
             )
@@ -817,21 +819,29 @@ class MainWindow(QMainWindow):
     def planning_arguments(self, tasks=None):
         values = self.store.tasks() if tasks is None else copy.deepcopy(tasks)
         now = self.now()
+        battery = BatteryProfile(**self.store.get("battery", {}))
+        week = self.store.get("week", blank_week())
+        overrides = self.store.get("overrides", [])
+        devices = self.store.devices()
+        by_device = {device.id: device for device in devices}
+        consumed = 0
         for task in values:
-            if task.started_at:
-                elapsed = max(
-                    0, int((now - datetime.fromisoformat(task.started_at)).total_seconds() // 60)
+            if task.started_at and task.device_id in by_device:
+                elapsed, energy = progress_since_start(
+                    task, by_device[task.device_id], week, overrides, now, battery
                 )
                 task.completed = min(task.minutes, task.completed + elapsed)
+                consumed += energy
+        battery.charge = max(0, battery.charge - consumed / battery.capacity_wh * 100)
         return dict(
-            devices=self.store.devices(),
+            devices=devices,
             tasks=values,
-            week=self.store.get("week", blank_week()),
+            week=week,
             now=now,
             power_limit=self.store.get("power_limit", 3500),
             background_power=self.store.get("background_power", 0),
-            overrides=self.store.get("overrides", []),
-            battery=BatteryProfile(**self.store.get("battery", {})),
+            overrides=overrides,
+            battery=battery,
             algorithm=self.store.get("algorithm", "greedy"),
         )
 
@@ -884,6 +894,21 @@ class MainWindow(QMainWindow):
                     self.task_action(task, "paused")
         self.refresh_overrides()
         self.replan()
+        if (
+            self.store.get("notifications", True)
+            and change["power"]
+            and datetime.fromisoformat(change["start"])
+            <= now
+            < datetime.fromisoformat(change["end"])
+        ):
+            self.deliver_notice(
+                Notice(
+                    "confirmed_power",
+                    datetime.fromisoformat(change["start"]),
+                    "Світло з’явилося",
+                    "Стан підтверджено вами. Оновлюю розклад найближчих задач.",
+                )
+            )
 
     def refresh_overrides(self):
         self.override_list.clear()
@@ -922,6 +947,41 @@ class MainWindow(QMainWindow):
             self.notifier.shutdown()
             self.tray.hide()
             event.accept()
+
+    def record_progress(self, task, until):
+        device = next((d for d in self.store.devices() if d.id == task.device_id), None)
+        if not device or not task.started_at:
+            return
+        battery = BatteryProfile(**self.store.get("battery", {}))
+        elapsed, energy = progress_since_start(
+            task,
+            device,
+            self.store.get("week", blank_week()),
+            self.store.get("overrides", []),
+            until,
+            battery,
+        )
+        task.completed = min(task.minutes, task.completed + elapsed)
+        task.started_at = None
+        if energy:
+            battery.charge = max(0, battery.charge - energy / battery.capacity_wh * 100)
+            self.store.set("battery", asdict(battery))
+            self.reserve_panel.charge.setValue(battery.charge)
+        if task.target is not None:
+            device.charge = max(
+                0,
+                min(
+                    task.target,
+                    task.target
+                    - task.remaining
+                    * device.power
+                    * device.efficiency
+                    / (60 * device.capacity)
+                    * 100,
+                ),
+            )
+            self.store.save(device)
+            self.refresh_devices()
 
     def save_week(self):
         try:
@@ -1023,8 +1083,13 @@ class MainWindow(QMainWindow):
         now = self.now()
         week = self.store.get("week", blank_week())
         power = power_at(week, now, self.store.get("overrides", []))
+        actual = any(
+            datetime.fromisoformat(change["start"]) <= now < datetime.fromisoformat(change["end"])
+            for change in self.store.get("overrides", [])
+        )
         self.status.setText(
-            f"{now:%d.%m.%Y · %H:%M}  |  За графіком: "
+            f"{now:%d.%m.%Y · %H:%M}  |  "
+            + ("За вашим уточненням: " if actual else "За графіком: ")
             + (
                 "є світло"
                 if power is True
@@ -1047,7 +1112,7 @@ class MainWindow(QMainWindow):
         self.timeline.now = now
         self.timeline.setMinimumHeight(max(140, 85 + 36 * len(active)))
         self.timeline.update()
-        profile = BatteryProfile(**self.store.get("battery", {}))
+        profile = self.planning_arguments()["battery"]
         self.reserve_panel.plan_result.setText(
             f"План використає резерв: {self.plan.reserve_used_wh:.1f} Вт·год. "
             f"Доступний залишок вище мінімуму: {max(0, profile.usable_wh - self.plan.reserve_used_wh):.1f} Вт·год."
@@ -1147,11 +1212,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Зараз виконати неможливо", check.conflicts[task.id])
                 return
         if task.started_at:
-            elapsed = max(
-                0, int((now - datetime.fromisoformat(task.started_at)).total_seconds() // 60)
-            )
-            task.completed = min(task.minutes, task.completed + elapsed)
-            task.started_at = None
+            self.record_progress(task, now)
         task.locked_segments = []
         if action == "paused" and not task.interruptible:
             reply = QMessageBox.question(
@@ -1191,16 +1252,7 @@ class MainWindow(QMainWindow):
             # Час сну не зараховується як підтверджена робота пристроїв.
             for task in self.store.tasks():
                 if task.status == "running" and task.started_at:
-                    elapsed = max(
-                        0,
-                        int(
-                            (
-                                self.last_tick - datetime.fromisoformat(task.started_at)
-                            ).total_seconds()
-                            // 60
-                        ),
-                    )
-                    task.completed = min(task.minutes, task.completed + elapsed)
+                    self.record_progress(task, self.last_tick)
                     task.status = "paused"
                     task.started_at = None
                     task.locked_segments = []
@@ -1240,6 +1292,8 @@ class MainWindow(QMainWindow):
                     "За актуальними даними: є світло. "
                     if current
                     else "За актуальними даними: немає світла. "
+                    if current is False
+                    else "Стан живлення не задано. "
                 )
                 + "План на 3 години: "
                 + upcoming_text(self.plan, self.store.tasks(), now)

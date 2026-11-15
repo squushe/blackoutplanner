@@ -109,3 +109,26 @@ def test_dp_selects_best_weight_for_single_window():
     assert len({s.task_id for s in greedy.segments}) == 1
     assert len({s.task_id for s in dynamic.segments}) == 2
     assert sum(t.priority for t in knapsack(tasks, 60)) == 6
+
+
+def test_dp_matches_exhaustive_search_on_small_random_inputs():
+    import itertools
+    import random
+
+    rng = random.Random(42)
+    device = Device("Прилад")
+    for _ in range(25):
+        tasks = [work(device, rng.randint(1, 20), priority=rng.randint(1, 5)) for _ in range(8)]
+        capacity = rng.randint(10, 50)
+        exact = max(
+            sum(t.priority for t, take in zip(tasks, mask) if take)
+            for mask in itertools.product((False, True), repeat=len(tasks))
+            if sum(t.remaining for t, take in zip(tasks, mask) if take) <= capacity
+        )
+        assert sum(t.priority for t in knapsack(tasks, capacity)) == exact
+
+
+def test_reserve_below_minimum_has_no_available_energy():
+    battery = BatteryProfile(charge=10, reserve=20)
+    battery.validate()
+    assert battery.usable_wh == 0
