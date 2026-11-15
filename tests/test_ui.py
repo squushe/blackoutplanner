@@ -425,7 +425,9 @@ def test_deadline_editor_replans_existing_task(app, workspace_window, monkeypatc
     window, store, _, task, clock = workspace_window
 
     def choose_deadline(dialog):
-        dialog.findChild(QDateTimeEdit).setDateTime((clock["now"] + timedelta(hours=8)).replace(tzinfo=None))
+        dialog.findChild(QDateTimeEdit).setDateTime(
+            (clock["now"] + timedelta(hours=8)).replace(tzinfo=None)
+        )
         return QDialog.DialogCode.Accepted
 
     monkeypatch.setattr(QDialog, "exec", choose_deadline)
