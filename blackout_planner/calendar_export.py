@@ -36,7 +36,7 @@ def export_ics(plan, tasks, now=None):
         lines.extend(
             [
                 "BEGIN:VEVENT",
-                f"UID:{segment.task_id}-{index}@blackout-planner.local",
+                f"UID:{text(segment.task_id)}-{index}@blackout-planner.local",
                 "DTSTAMP:" + now.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ"),
                 "DTSTART:" + segment.start.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ"),
                 "DTEND:" + segment.end.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ"),

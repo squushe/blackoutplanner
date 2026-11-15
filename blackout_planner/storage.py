@@ -8,7 +8,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .domain import BatteryProfile, Device, Task, blank_week, validate_week
+from .domain import BatteryProfile, Device, Task, blank_week, validate_overrides, validate_week
 
 
 class Store:
@@ -91,15 +91,52 @@ class Store:
             records = {}
             for table in ("devices", "tasks", "settings"):
                 records[table] = backup.execute(f"SELECT * FROM {table}").fetchall()
-            for _, payload in records["devices"]:
-                Device(**json.loads(payload)).validate()
-            for _, payload in records["tasks"]:
-                Task(**json.loads(payload)).validate()
+            device_ids = set()
+            for row_id, payload in records["devices"]:
+                device = Device(**json.loads(payload))
+                device.validate()
+                if row_id != device.id:
+                    raise ValueError("Ідентифікатор пристрою не відповідає запису")
+                device_ids.add(device.id)
+            for row_id, payload in records["tasks"]:
+                task = Task(**json.loads(payload))
+                task.validate()
+                if row_id != task.id or task.device_id not in device_ids:
+                    raise ValueError("Задача посилається на відсутній пристрій")
             settings = {key: json.loads(payload) for key, payload in records["settings"]}
             if "week" in settings:
                 validate_week(settings["week"])
             if "battery" in settings:
                 BatteryProfile(**settings["battery"]).validate()
+            validate_overrides(settings.get("overrides", []))
+            from math import isfinite
+            from zoneinfo import ZoneInfo
+
+            limit, background = (
+                settings.get("power_limit", 3500),
+                settings.get("background_power", 0),
+            )
+            if (
+                not isfinite(limit)
+                or not isfinite(background)
+                or not 0 <= background <= limit
+                or limit <= 0
+            ):
+                raise ValueError("Некоректні обмеження потужності в резервній копії")
+            ZoneInfo(settings.get("timezone", "Europe/Kyiv"))
+            if settings.get("algorithm", "greedy") not in {"greedy", "dp"}:
+                raise ValueError("Невідомий алгоритм у резервній копії")
+            history = settings.get("notification_history", {})
+            if not isinstance(history, dict) or any(not isinstance(key, str) or not isinstance(value, str)
+                                                    for key, value in history.items()):
+                raise ValueError("Некоректна історія нагадувань")
+            if not isinstance(settings.get("notification_inbox", []), list):
+                raise ValueError("Некоректний журнал сповіщень")
+            for entry in settings.get("notification_inbox", []):
+                datetime.fromisoformat(entry["time"])
+                for key in ("title", "body", "task_id"):
+                    if not isinstance(entry[key], str):
+                        raise ValueError("Некоректний журнал сповіщень")
         from uuid import uuid4
 
         safety = self.path.with_name(
