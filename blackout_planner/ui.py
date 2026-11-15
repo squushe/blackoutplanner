@@ -6,7 +6,7 @@ import math
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QObject, QRectF, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QFontDatabase, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -41,7 +41,9 @@ from PySide6.QtWidgets import (
     QWizardPage,
 )
 
-from .domain import Device, Task, blank_week, build_plan, validate_week
+from .calendar_export import export_ics
+from .domain import BatteryProfile, Device, Task, blank_week, build_plan, power_at, validate_week
+from .panels import OutageDialog, ReservePanel
 from .storage import import_week
 
 STYLE = """
@@ -498,6 +500,8 @@ class Onboarding(QWizard):
 
 
 class Timeline(QWidget):
+    move_requested = Signal(object, int)
+
     def __init__(self):
         super().__init__()
         self.setMinimumHeight(140)
@@ -506,6 +510,46 @@ class Timeline(QWidget):
         self.tasks = []
         self.week = blank_week()
         self.now = datetime.now().astimezone()
+        self.overrides = []
+        self.hits = []
+        self.drag = None
+        self.setMouseTracking(True)
+        self.setToolTip("Перетягніть сегмент задачі. Крок переміщення — 5 хвилин.")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            for rect, segment in self.hits:
+                if rect.contains(event.position()):
+                    task = next(t for t in self.tasks if t.id == segment.task_id)
+                    if task.status != "running":
+                        self.drag = (segment, event.position().x(), event.position().x())
+                        self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                    break
+
+    def mouseMoveEvent(self, event):
+        if self.drag:
+            self.drag = (*self.drag[:2], event.position().x())
+            self.update()
+        else:
+            hit = next(
+                (segment for rect, segment in self.hits if rect.contains(event.position())), None
+            )
+            self.setCursor(Qt.CursorShape.OpenHandCursor if hit else Qt.CursorShape.ArrowCursor)
+            if hit:
+                self.setToolTip(
+                    f"{hit.start.astimezone(self.now.tzinfo):%H:%M}–"
+                    f"{hit.end.astimezone(self.now.tzinfo):%H:%M}. Перетягніть для зміни часу."
+                )
+
+    def mouseReleaseEvent(self, event):
+        if self.drag:
+            segment, first_x, _ = self.drag
+            delta = round((event.position().x() - first_x) / (self.width() - 150) * 1440 / 5) * 5
+            self.drag = None
+            self.unsetCursor()
+            if delta:
+                self.move_requested.emit(segment, delta)
+            self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -513,13 +557,15 @@ class Timeline(QWidget):
         width = self.width() - 150
         left = 115
         painter.fillRect(self.rect(), QColor("#142131"))
+        self.hits = []
         day = self.now.replace(hour=0, minute=0, second=0, microsecond=0)
 
         def x(value):
             local = value.astimezone(self.now.tzinfo)
             return left + width * ((local - day).total_seconds() / 86400)
 
-        for slot, power in enumerate(self.week[self.now.weekday()]):
+        for slot in range(48):
+            power = power_at(self.week, day + timedelta(minutes=slot * 30), self.overrides)
             painter.fillRect(
                 int(left + width * slot / 48),
                 28,
@@ -547,8 +593,16 @@ class Timeline(QWidget):
                         continue
                     begin, end = max(left, x(segment.start)), min(left + width, x(segment.end))
                     if end > begin:
+                        rect = QRectF(begin, y, max(2, end - begin), 23)
+                        self.hits.append((rect, segment))
+                        if self.drag and self.drag[0] == segment:
+                            begin += self.drag[2] - self.drag[1]
                         painter.fillRect(
-                            int(begin), y, max(2, int(end - begin)), 23, QColor("#4ba997")
+                            int(begin),
+                            y,
+                            int(rect.width()),
+                            23,
+                            QColor("#c79448" if task.locked_segments else "#4ba997"),
                         )
         painter.setPen(QPen(QColor("#f5ba65"), 2))
         painter.drawLine(int(x(self.now)), 25, int(x(self.now)), self.height() - 8)
@@ -596,6 +650,7 @@ class MainWindow(QMainWindow):
         header.addWidget(title)
         header.addStretch()
         button("+ Нова задача", self.add_task, header)
+        button("Уточнити світло", self.correct_power, header)
         layout.addLayout(header)
         self.status = QLabel()
         self.status.setObjectName("muted")
@@ -605,6 +660,7 @@ class MainWindow(QMainWindow):
         today = QWidget()
         today_layout = QVBoxLayout(today)
         self.timeline = Timeline()
+        self.timeline.move_requested.connect(self.move_segment)
         timeline_scroll = QScrollArea()
         timeline_scroll.setWidgetResizable(True)
         timeline_scroll.setWidget(self.timeline)
@@ -622,6 +678,13 @@ class MainWindow(QMainWindow):
         schedule_layout = QVBoxLayout(schedule)
         schedule_layout.addWidget(self.editor)
         button("Зберегти графік і перепланувати", self.save_week, schedule_layout)
+        self.override_list = QListWidget()
+        self.override_list.setMaximumHeight(100)
+        schedule_layout.addWidget(self.override_list)
+        override_actions = QHBoxLayout()
+        button("+ Уточнення для дати", self.correct_power, override_actions)
+        button("Видалити вибране уточнення", self.delete_override, override_actions)
+        schedule_layout.addLayout(override_actions)
         self.tabs.addTab(schedule, "Графік")
         devices = QWidget()
         devices_layout = QVBoxLayout(devices)
@@ -633,6 +696,9 @@ class MainWindow(QMainWindow):
         button("Редагувати вибраний", self.edit_device, actions)
         devices_layout.addLayout(actions)
         self.tabs.addTab(devices, "Пристрої")
+        self.reserve_panel = ReservePanel(store)
+        self.reserve_panel.saved.connect(self.replan)
+        self.tabs.addTab(self.reserve_panel, "Автономність")
         settings = QWidget()
         form = QFormLayout(settings)
         self.power = number(1, 100000, store.get("power_limit", 3500), " Вт")
@@ -648,10 +714,19 @@ class MainWindow(QMainWindow):
         export = QPushButton("Експортувати поточний план у JSON")
         export.clicked.connect(self.export_plan)
         form.addRow(export)
+        calendar = QPushButton("Експорт у календар ICS")
+        calendar.clicked.connect(self.export_calendar)
+        form.addRow(calendar)
+        backup = QPushButton("Створити резервну копію")
+        backup.clicked.connect(self.backup_data)
+        form.addRow(backup)
+        restore = QPushButton("Відновити резервну копію")
+        restore.clicked.connect(self.restore_data)
+        form.addRow(restore)
         note = QLabel(
             "Статус живлення визначається за введеним графіком.\n"
             "Підтверджуйте початок і завершення роботи на картках задач.\n"
-            "Резервне живлення, автозапуск і перетягування задач — наступні етапи."
+            "Ручні закріплення позначені жовтим на таймлайні."
         )
         note.setWordWrap(True)
         form.addRow(note)
@@ -682,7 +757,98 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self.tick)
         self.timer.start(30000)
         self.refresh_devices()
+        self.refresh_overrides()
         self.replan()
+
+    def planning_arguments(self, tasks=None):
+        values = self.store.tasks() if tasks is None else copy.deepcopy(tasks)
+        now = self.now()
+        for task in values:
+            if task.started_at:
+                elapsed = max(
+                    0, int((now - datetime.fromisoformat(task.started_at)).total_seconds() // 60)
+                )
+                task.completed = min(task.minutes, task.completed + elapsed)
+        return dict(
+            devices=self.store.devices(),
+            tasks=values,
+            week=self.store.get("week", blank_week()),
+            now=now,
+            power_limit=self.store.get("power_limit", 3500),
+            background_power=self.store.get("background_power", 0),
+            overrides=self.store.get("overrides", []),
+            battery=BatteryProfile(**self.store.get("battery", {})),
+            algorithm=self.store.get("algorithm", "greedy"),
+        )
+
+    def move_segment(self, segment, delta):
+        if self.workers or not self.plan or segment not in self.plan.segments:
+            self.statusBar().showMessage(
+                "Дочекайтеся актуального розкладу й повторіть переміщення", 5000
+            )
+            return
+        task = next(t for t in self.store.tasks() if t.id == segment.task_id)
+        if task.status == "running":
+            return
+        future = [s for s in self.plan.segments if s.task_id == task.id]
+        task.locked_segments = [
+            [
+                (s.start + timedelta(minutes=delta) if s == segment else s.start).isoformat(),
+                (s.end + timedelta(minutes=delta) if s == segment else s.end).isoformat(),
+            ]
+            for s in future
+        ]
+        task.locked_segments.sort()
+        tasks = [task if t.id == task.id else t for t in self.store.tasks()]
+        trial = build_plan(**self.planning_arguments(tasks))
+        new_conflicts = set(trial.conflicts) - set(self.plan.conflicts)
+        if task.id in trial.conflicts or new_conflicts:
+            message = trial.conflicts.get(task.id, "Переміщення створює конфлікт іншої задачі")
+            QMessageBox.warning(self, "Переміщення скасовано", message)
+            return
+        self.store.save(task)
+        self.replan()
+
+    def unlock_task(self, task):
+        task.locked_segments = []
+        self.store.save(task)
+        self.replan()
+
+    def correct_power(self):
+        dialog = OutageDialog(self.now(), self)
+        if dialog.exec():
+            self.apply_power_change(dialog.change)
+
+    def apply_power_change(self, change):
+        now = self.now()
+        self.store.set("overrides", [*self.store.get("overrides", []), change])
+        if not change["power"] and datetime.fromisoformat(
+            change["start"]
+        ) <= now < datetime.fromisoformat(change["end"]):
+            for task in self.store.tasks():
+                if task.status == "running":
+                    self.task_action(task, "paused")
+        self.refresh_overrides()
+        self.replan()
+
+    def refresh_overrides(self):
+        self.override_list.clear()
+        for change in self.store.get("overrides", []):
+            begin = datetime.fromisoformat(change["start"]).astimezone(self.now().tzinfo)
+            end = datetime.fromisoformat(change["end"]).astimezone(self.now().tzinfo)
+            self.override_list.addItem(
+                f"{begin:%d.%m %H:%M} — {end:%d.%m %H:%M}: "
+                + ("є світло" if change["power"] else "немає світла")
+            )
+
+    def delete_override(self):
+        index = self.override_list.currentRow()
+        if index >= 0:
+            changes = self.store.get("overrides", [])
+            changes.pop(index)
+            self.store.set("overrides", changes)
+            self.refresh_overrides()
+            self.replan()
 
     def show_from_tray(self):
         self.showNormal()
@@ -750,6 +916,8 @@ class MainWindow(QMainWindow):
             self.device_list.addItem(
                 f"{device.name}    {device.power:g} Вт    {detail}    пріоритет {device.priority}"
             )
+        if hasattr(self, "reserve_panel"):
+            self.reserve_panel.reload_devices()
 
     def add_task(self):
         devices = self.store.devices()
@@ -766,24 +934,9 @@ class MainWindow(QMainWindow):
 
     def replan(self):
         self.revision += 1
-        tasks = self.store.tasks()
-        now = self.now()
-        for task in tasks:
-            if task.started_at:
-                elapsed = max(
-                    0, int((now - datetime.fromisoformat(task.started_at)).total_seconds() // 60)
-                )
-                task.completed = min(task.minutes, task.completed + elapsed)
         worker = PlanWorker(
             self.revision,
-            dict(
-                devices=self.store.devices(),
-                tasks=tasks,
-                week=self.store.get("week", blank_week()),
-                now=now,
-                power_limit=self.store.get("power_limit", 3500),
-                background_power=self.store.get("background_power", 0),
-            ),
+            self.planning_arguments(),
         )
         worker.signals.ready.connect(self.plan_ready)
         worker.signals.failed.connect(self.plan_failed)
@@ -806,7 +959,7 @@ class MainWindow(QMainWindow):
     def render(self):
         now = self.now()
         week = self.store.get("week", blank_week())
-        power = week[now.weekday()][now.hour * 2 + now.minute // 30]
+        power = power_at(week, now, self.store.get("overrides", []))
         self.status.setText(
             f"{now:%d.%m.%Y · %H:%M}  |  За графіком: "
             + (
@@ -827,9 +980,17 @@ class MainWindow(QMainWindow):
         self.timeline.plan = self.plan
         self.timeline.tasks = active
         self.timeline.week = week
+        self.timeline.overrides = self.store.get("overrides", [])
         self.timeline.now = now
         self.timeline.setMinimumHeight(max(140, 85 + 36 * len(active)))
         self.timeline.update()
+        profile = BatteryProfile(**self.store.get("battery", {}))
+        self.reserve_panel.plan_result.setText(
+            f"План використає резерв: {self.plan.reserve_used_wh:.1f} Вт·год. "
+            f"Доступний залишок вище мінімуму: {max(0, profile.usable_wh - self.plan.reserve_used_wh):.1f} Вт·год."
+            if profile.enabled
+            else "Резервне живлення вимкнено"
+        )
         if not tasks:
             self.cards.addWidget(QLabel("Додайте першу задачу — і тут з’явиться ваш план."))
         states = {
@@ -892,6 +1053,12 @@ class MainWindow(QMainWindow):
                     actions,
                 )
                 layout.addLayout(actions)
+                if task.locked_segments:
+                    button(
+                        "Зняти ручне закріплення",
+                        lambda checked=False, t=task: self.unlock_task(t),
+                        layout,
+                    )
             self.cards.addWidget(card)
 
     def task_action(self, task, action):
@@ -910,14 +1077,8 @@ class MainWindow(QMainWindow):
             candidate = copy.deepcopy(task)
             candidate.status = "running"
             tasks = [candidate if value.id == task.id else value for value in self.store.tasks()]
-            check = build_plan(
-                self.store.devices(),
-                tasks,
-                self.store.get("week", blank_week()),
-                now,
-                self.store.get("power_limit", 3500),
-                self.store.get("background_power", 0),
-            )
+            candidate.locked_segments = []
+            check = build_plan(**self.planning_arguments(tasks))
             if task.id in check.conflicts:
                 QMessageBox.warning(self, "Зараз виконати неможливо", check.conflicts[task.id])
                 return
@@ -927,6 +1088,7 @@ class MainWindow(QMainWindow):
             )
             task.completed = min(task.minutes, task.completed + elapsed)
             task.started_at = None
+        task.locked_segments = []
         if action == "paused" and not task.interruptible:
             reply = QMessageBox.question(
                 self,
@@ -1006,3 +1168,69 @@ class MainWindow(QMainWindow):
                 )
             except OSError as error:
                 QMessageBox.warning(self, "Експорт не виконано", str(error))
+
+    def export_calendar(self):
+        if not self.plan or self.workers:
+            QMessageBox.information(
+                self, "Розклад ще обчислюється", "Дочекайтеся завершення розрахунку"
+            )
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Експорт календаря", "blackout-plan.ics", "iCalendar (*.ics)"
+        )
+        if path:
+            try:
+                Path(path).write_bytes(export_ics(self.plan, self.store.tasks(), self.now()))
+            except OSError as error:
+                QMessageBox.warning(self, "Експорт не виконано", str(error))
+
+    def backup_data(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Резервна копія", "blackout-backup.sqlite3", "SQLite (*.sqlite3)"
+        )
+        if path:
+            try:
+                self.store.backup(Path(path))
+                self.statusBar().showMessage("Резервну копію збережено", 5000)
+            except (OSError, ValueError, __import__("sqlite3").Error) as error:
+                QMessageBox.warning(self, "Копію не створено", str(error))
+
+    def restore_data(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Відновлення", "", "SQLite (*.sqlite3)")
+        if not path:
+            return
+        if (
+            QMessageBox.question(
+                self,
+                "Відновити дані?",
+                "Поточні дані буде замінено. Перед заміною автоматично збережеться страхова копія.",
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        try:
+            safety = self.store.restore(Path(path))
+        except (OSError, ValueError, TypeError, KeyError, __import__("sqlite3").Error) as error:
+            QMessageBox.warning(self, "Відновлення не виконано", str(error))
+            return
+        self.editor.week = self.store.get("week", blank_week())
+        self.editor.render()
+        self.power.setValue(self.store.get("power_limit", 3500))
+        self.background.setValue(self.store.get("background_power", 0))
+        self.notifications.setChecked(self.store.get("notifications", True))
+        profile = BatteryProfile(**self.store.get("battery", {}))
+        panel = self.reserve_panel
+        for widget, value in [
+            (panel.capacity, profile.capacity_wh),
+            (panel.charge, profile.charge),
+            (panel.reserve, profile.reserve),
+            (panel.output, profile.output_w),
+            (panel.efficiency, profile.efficiency * 100),
+        ]:
+            widget.setValue(value)
+        panel.enabled.setChecked(profile.enabled)
+        panel.transfer.setChecked(profile.continuous_transfer)
+        self.refresh_devices()
+        self.refresh_overrides()
+        self.replan()
+        QMessageBox.information(self, "Дані відновлено", f"Страхова копія: {safety}")

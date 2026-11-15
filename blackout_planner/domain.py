@@ -103,8 +103,12 @@ class BatteryProfile:
     enabled: bool = False
 
     def validate(self):
-        if not (0 < self.capacity_wh <= 1000000 and 0 <= self.reserve <= self.charge <= 100
-                and 0 < self.output_w <= 100000 and 0 < self.efficiency <= 1):
+        if not (
+            0 < self.capacity_wh <= 1000000
+            and 0 <= self.reserve <= self.charge <= 100
+            and 0 < self.output_w <= 100000
+            and 0 < self.efficiency <= 1
+        ):
             raise ValueError("Перевірте ємність, заряд, резерв і потужність акумулятора")
 
     @property
@@ -123,8 +127,11 @@ class BatteryProfile:
 def power_at(week, moment, overrides=()):
     """Останнє датоване уточнення має перевагу над тижневим шаблоном."""
     for change in reversed(overrides):
-        if (datetime.fromisoformat(change["start"]) <= moment
-                < datetime.fromisoformat(change["end"])):
+        if (
+            datetime.fromisoformat(change["start"])
+            <= moment
+            < datetime.fromisoformat(change["end"])
+        ):
             return change["power"]
     return week[moment.weekday()][moment.hour * 2 + moment.minute // 30]
 
@@ -200,8 +207,9 @@ def build_plan(
         ),
     )
     if algorithm == "dp":
-        ordered = optimize_window_order(ordered, by_id, available, start, power_limit,
-                                        background_power, battery.enabled)
+        ordered = optimize_window_order(
+            ordered, by_id, available, start, power_limit, background_power, battery.enabled
+        )
     elif algorithm != "greedy":
         raise ValueError("Невідомий алгоритм планування")
     for task in ordered:
@@ -222,9 +230,13 @@ def build_plan(
             result.conflicts[task.id] = "Потужність пристрою перевищує доступний ліміт"
             continue
         feasible = [
-            (load[k] + device.power <= power_limit if available[k] else
-             battery.enabled and device.id in battery.compatible_ids
-             and reserve_load[k] + device.power <= battery.output_w)
+            (
+                load[k] + device.power <= power_limit
+                if available[k]
+                else battery.enabled
+                and device.id in battery.compatible_ids
+                and reserve_load[k] + device.power <= battery.output_w
+            )
             and k not in occupied[device.id]
             for k in range(end)
         ]
@@ -232,15 +244,17 @@ def build_plan(
         def acceptable(indices):
             if len(indices) != task.remaining or not all(feasible[k] for k in indices):
                 return False
-            energy = sum(device.power / (60 * battery.efficiency)
-                         for k in indices if not available[k])
+            energy = sum(
+                device.power / (60 * battery.efficiency) for k in indices if not available[k]
+            )
             if result.reserve_used_wh + energy > battery.usable_wh + 1e-8:
                 return False
             if not (task.interruptible or device.kind == "battery"):
                 if any(b != a + 1 for a, b in zip(indices, indices[1:])):
                     return False
                 if not battery.continuous_transfer and any(
-                        available[a] != available[b] for a, b in zip(indices, indices[1:])):
+                    available[a] != available[b] for a, b in zip(indices, indices[1:])
+                ):
                     return False
             return True
 
@@ -283,8 +297,8 @@ def build_plan(
         if len(selected) != task.remaining:
             result.conflicts[task.id] = (
                 "Ручне закріплення порушує графік, дедлайн або ресурсні обмеження"
-                if task.locked_segments and task.status != "running" else
-                "Поточне виконання конфліктує з графіком або лімітом; підтвердьте паузу"
+                if task.locked_segments and task.status != "running"
+                else "Поточне виконання конфліктує з графіком або лімітом; підтвердьте паузу"
                 if task.status == "running"
                 else "Недостатньо часу, потужності або енергії резерву до дедлайну"
                 if task.interruptible or device.kind == "battery"
@@ -319,8 +333,9 @@ def knapsack(tasks, capacity):
         previous = rows[-1]
         current = previous.copy()
         for minute in range(task.remaining, capacity + 1):
-            current[minute] = max(previous[minute],
-                                  previous[minute - task.remaining] + task.priority)
+            current[minute] = max(
+                previous[minute], previous[minute - task.remaining] + task.priority
+            )
         rows.append(current)
     chosen = []
     minute = capacity
@@ -346,14 +361,23 @@ def optimize_window_order(tasks, devices, available, start, limit, background, h
     while end < len(available) and available[end]:
         end += 1
     window_end = start + timedelta(minutes=end)
-    candidates = [t for t in tasks if t.status not in {"done", "cancelled"}
-                  and t.remaining and not t.interruptible and t.device_id in devices
-                  and devices[t.device_id].kind == "job"
-                  and devices[t.device_id].power + background <= limit
-                  and datetime.fromisoformat(t.deadline) >= window_end]
-    if any(a.device_id != b.device_id
-           and devices[a.device_id].power + devices[b.device_id].power + background <= limit
-           for index, a in enumerate(candidates) for b in candidates[index + 1:]):
+    candidates = [
+        t
+        for t in tasks
+        if t.status not in {"done", "cancelled"}
+        and t.remaining
+        and not t.interruptible
+        and t.device_id in devices
+        and devices[t.device_id].kind == "job"
+        and devices[t.device_id].power + background <= limit
+        and datetime.fromisoformat(t.deadline) >= window_end
+    ]
+    if any(
+        a.device_id != b.device_id
+        and devices[a.device_id].power + devices[b.device_id].power + background <= limit
+        for index, a in enumerate(candidates)
+        for b in candidates[index + 1 :]
+    ):
         return tasks
     chosen = knapsack(candidates, end - first)
     selected = {t.id for t in chosen}

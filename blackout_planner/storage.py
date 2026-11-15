@@ -4,8 +4,8 @@ import csv
 import json
 import sqlite3
 from contextlib import closing
-from datetime import UTC, datetime
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .domain import BatteryProfile, Device, Task, blank_week, validate_week
@@ -62,10 +62,14 @@ class Store:
     def backup(self, destination: Path):
         """SQLite backup включає підтверджені дані з WAL."""
         destination = destination.resolve()
-        if destination == self.path or str(destination) in {str(self.path) + "-wal", str(self.path) + "-shm"}:
+        if destination == self.path or str(destination) in {
+            str(self.path) + "-wal",
+            str(self.path) + "-shm",
+        }:
             raise ValueError("Резервна копія має бути окремим файлом")
         destination.parent.mkdir(parents=True, exist_ok=True)
         from uuid import uuid4
+
         temporary = destination.with_name(destination.name + "." + uuid4().hex + ".tmp")
         try:
             with closing(sqlite3.connect(temporary)) as target:
@@ -97,8 +101,13 @@ class Store:
             if "battery" in settings:
                 BatteryProfile(**settings["battery"]).validate()
         from uuid import uuid4
-        safety = self.path.with_name("before-restore-" + datetime.now(UTC).strftime("%Y%m%d-%H%M%S-")
-                                     + uuid4().hex[:6] + ".sqlite3")
+
+        safety = self.path.with_name(
+            "before-restore-"
+            + datetime.now(UTC).strftime("%Y%m%d-%H%M%S-")
+            + uuid4().hex[:6]
+            + ".sqlite3"
+        )
         self.backup(safety)
         with self.connection:
             for table, rows in records.items():
