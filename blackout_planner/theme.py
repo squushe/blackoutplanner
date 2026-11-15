@@ -7,78 +7,9 @@ from PySide6.QtGui import QIcon, QIconEngine, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QWidget
 
-STYLE = """
-QWidget { font-family: 'Segoe UI'; font-size: 10pt; color: #243b38; }
-QMainWindow, QDialog, QWizard, QWizardPage, QWizard > QWidget { background: #f4f7f6; }
-QFrame#sidebar { background: #122f2b; border: 0; }
-QLabel#brand { color: #ffffff; font-size: 16pt; font-weight: 700; }
-QLabel#brandSub { color: #8faea5; font-size: 9pt; }
-QLabel#navCaption { color: #7f9f96; font-size: 8pt; font-weight: 600; }
-QPushButton#nav { color: #b7ccc5; background: transparent; border: 0;
- border-radius: 9px; text-align: left; padding: 13px 15px; font-size: 10pt; }
-QPushButton#nav:hover { background: #1c4038; color: #ffffff; }
-QPushButton#nav:checked { background: #265345; color: #d6faab; font-weight: 600; }
-QLabel#title { font-size: 24pt; font-weight: 700; color: #173a32; }
-QLabel#muted { color: #61796c; font-size: 9pt; }
-QLabel#sectionTitle { font-size: 13pt; font-weight: 650; color: #24453b; }
-QFrame#metric, QFrame#card, QFrame#timelinePanel { background: #ffffff;
- border: 1px solid #e2eae6; border-radius: 13px; }
-QLabel#metricCaption { color: #62776d; font-size: 9pt; }
-QLabel#metricValue { color: #214737; font-size: 19pt; font-weight: 700; }
-QLabel#metricHint { color: #84958d; font-size: 8pt; }
-QLabel#badge { color: #387354; background: #ebf5eb; border-radius: 6px;
- padding: 4px 9px; font-size: 8pt; font-weight: 600; }
-QLabel#badge[state='conflict'] { color: #a65b37; background: #fff0e5; }
-QLabel#badge[state='paused'] { color: #92722d; background: #fbf3dc; }
-QLabel#badge[state='done'] { color: #447a64; background: #ecf5f0; }
-QTabWidget::pane { border: 0; background: transparent; }
-QPushButton { background: #ffffff; color: #3e5d50; border: 1px solid #dae6df;
- border-radius: 8px; padding: 9px 14px; font-weight: 500; }
-QPushButton:hover { background: #ecf4ee; border-color: #b7cfbf; }
-QPushButton:pressed { background: #dcebdd; }
-QPushButton:focus { border: 1px solid #74a788; }
-QPushButton#primary { background: #275f46; color: #ffffff; border: 1px solid #275f46; }
-QPushButton#primary:hover { background: #347c59; }
-QPushButton#quiet { background: transparent; color: #81968b; border: 0; }
-QPushButton#quiet:hover { background: #fff0eb; color: #ab624c; }
-QPushButton:disabled { color: #a5b4ac; background: #f0f4f1; border-color: #e5ece7; }
-QLineEdit, QSpinBox, QDoubleSpinBox, QDateTimeEdit, QComboBox {
- background: #ffffff; border: 1px solid #dce6df; border-radius: 7px; padding: 8px; }
-QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QDateTimeEdit:focus,
- QComboBox:focus { border-color: #6d9e7b; }
-QAbstractSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right;
- width: 20px; border: 0; background: transparent; }
-QAbstractSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right;
- width: 20px; border: 0; background: transparent; }
-QComboBox::drop-down { border: 0; width: 25px; }
-QListWidget, QTableWidget { background: #ffffff; border: 1px solid #e0e8e2;
- border-radius: 10px; outline: 0; selection-background-color: #e8f2e6;
- selection-color: #214737; }
-QListWidget::item { padding: 12px 10px; border-bottom: 1px solid #f0f4f1; }
-QListWidget::item:selected { background: #e8f2e6; border-radius: 6px; }
-QHeaderView::section { background: #f0f5f0; color: #70877a; border: 0; padding: 9px; }
-QTableWidget { gridline-color: #e4ece6; }
-QCheckBox { spacing: 9px; padding: 5px 0; }
-QCheckBox::indicator, QListWidget::indicator { width: 15px; height: 15px;
- border: 1px solid #b9cfc0; border-radius: 4px; background: #ffffff; }
-QCheckBox::indicator:checked, QListWidget::indicator:checked { background: #36815b;
- border: 3px solid #bedbc5; }
-QScrollArea { border: 0; background: transparent; }
-QScrollBar:vertical { background: transparent; width: 7px; margin: 3px; }
-QScrollBar::handle:vertical { background: #c8d8cc; border-radius: 3px; min-height: 25px; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
-QProgressBar { background: #edf3ed; border: 0; border-radius: 3px; max-height: 5px; }
-QProgressBar::chunk { background: #84b578; border-radius: 3px; }
-QToolTip { background: #193e30; color: #ffffff; border: 0; padding: 7px; }
-QMenu { background: #ffffff; border: 1px solid #dce6df; padding: 6px; }
-QMenu::item { padding: 9px 20px; }
-QMenu::item:selected { background: #e8f2e6; }
-QStatusBar { color: #82988a; background: #f4f7f6; }
-QPushButton#sidebarToggle { background: transparent; border: 1px solid #dce6df;
- border-radius: 8px; padding: 7px; }
-QPushButton#sidebarToggle:hover { background: #e7f0e8; border-color: #b7cfbf; }
-"""
+from .appearance import stylesheet
+
+STYLE = stylesheet()
 
 PATHS = {
     "menu": '<path d="M4 6h16M4 12h16M4 18h16"/>',
@@ -132,14 +63,14 @@ class VectorIconEngine(QIconEngine):
         return pixmap
 
 
-def icon(name, color="#a8c7b7", size=22):
+def icon(name, color="#DEC3B4", size=22):
     return QIcon(VectorIconEngine(svg_source(name, color)))
 
 
 class BrandMark(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.renderer = QSvgRenderer(QByteArray(svg_source("bolt", "#c8ed9b")), self)
+        self.renderer = QSvgRenderer(QByteArray(svg_source("bolt", "#F1B29E")), self)
         self.setFixedSize(36, 36)
         self.setAccessibleName("Логотип Blackout Planner")
 

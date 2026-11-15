@@ -9,9 +9,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRectF, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QFontDatabase, QPainter, QPalette, QPen
+from PySide6.QtGui import QAction, QBrush, QColor, QFont, QFontDatabase, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QBoxLayout,
     QButtonGroup,
     QCheckBox,
@@ -48,16 +49,18 @@ from PySide6.QtWidgets import (
     QWizardPage,
 )
 
+from .appearance import apply_theme, colors
 from .calendar_export import export_ics
 from .domain import BatteryProfile, Device, Task, blank_week, build_plan, power_at, validate_week
 from .notifications import Notice, build_notices, due_notices, upcoming_text
 from .notifier import Notifier
+from .overview import next_power_change
 from .panels import OutageDialog, ReservePanel
 from .platform_services import Autostart
 from .progress import progress_since_start
 from .responsive import dialog_form, fit_window, scroll_page
 from .storage import import_week
-from .theme import STYLE, BrandMark, icon
+from .theme import BrandMark, icon
 
 
 def configure_application(app):
@@ -68,21 +71,7 @@ def configure_application(app):
         if font.exists():
             QFontDatabase.addApplicationFont(str(font))
     app.setFont(QFont("Segoe UI", 10))
-    palette = QPalette()
-    for role, color in [
-        (QPalette.ColorRole.Window, "#f4f7f6"),
-        (QPalette.ColorRole.WindowText, "#243b38"),
-        (QPalette.ColorRole.Base, "#ffffff"),
-        (QPalette.ColorRole.AlternateBase, "#f1f6f1"),
-        (QPalette.ColorRole.Text, "#243b38"),
-        (QPalette.ColorRole.Button, "#ffffff"),
-        (QPalette.ColorRole.ButtonText, "#3e5d50"),
-        (QPalette.ColorRole.Highlight, "#528760"),
-        (QPalette.ColorRole.HighlightedText, "#ffffff"),
-    ]:
-        palette.setColor(role, QColor(color))
-    app.setPalette(palette)
-    app.setStyleSheet(STYLE)
+    apply_theme(app, "light")
 
 
 def button(text, callback, layout):
@@ -151,10 +140,16 @@ class ScheduleEditor(QWidget):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 item.setBackground(
                     QColor(
-                        "#dcefdc" if value is True else "#eef1ef" if value is False else "#fff3d8"
+                        colors()["power"]
+                        if value is True
+                        else colors()["outage"]
+                        if value is False
+                        else colors()["warning"]
                     )
                 )
-                item.setForeground(QColor("#427450" if value is True else "#7f8e85"))
+                item.setForeground(
+                    QColor(colors()["power_ink"] if value is True else colors()["outage_ink"])
+                )
                 self.table.setItem(slot, day, item)
         self.changed.emit()
 
@@ -571,7 +566,7 @@ class Timeline(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         width = self.width() - 150
         left = 115
-        painter.fillRect(self.rect(), QColor("#ffffff"))
+        painter.fillRect(self.rect(), QColor(colors()["surface"]))
         self.hits = []
         day = self.now.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -586,19 +581,27 @@ class Timeline(QWidget):
                 28,
                 math.ceil(width / 1440),
                 20,
-                QColor("#b8dba1" if power is True else "#eef2ee"),
+                QColor(colors()["power"] if power is True else colors()["outage"]),
             )
-        painter.setPen(QColor("#84998b"))
+            if power is False:
+                painter.fillRect(
+                    int(left + width * slot / 1440),
+                    28,
+                    math.ceil(width / 1440),
+                    20,
+                    QBrush(QColor(colors()["outage_ink"]), Qt.BrushStyle.BDiagPattern),
+                )
+        painter.setPen(QColor(colors()["muted"]))
         for hour in range(0, 25, 3):
             position = int(left + width * hour / 24)
             painter.drawText(position - 12, 19, f"{hour:02}:00")
-            painter.setPen(QPen(QColor("#e8efe8"), 1, Qt.PenStyle.DashLine))
+            painter.setPen(QPen(QColor(colors()["grid"]), 1, Qt.PenStyle.DashLine))
             painter.drawLine(position, 50, position, self.height() - 10)
-            painter.setPen(QColor("#84998b"))
+            painter.setPen(QColor(colors()["muted"]))
         painter.drawText(10, 43, "Живлення")
         for row, task in enumerate(self.tasks):
             y = 68 + row * 36
-            painter.setPen(QColor("#5e7867"))
+            painter.setPen(QColor(colors()["muted"]))
             painter.drawText(
                 10,
                 y + 17,
@@ -615,9 +618,15 @@ class Timeline(QWidget):
                         if self.drag and self.drag[0] == segment:
                             begin += self.drag[2] - self.drag[1]
                         painter.setPen(Qt.PenStyle.NoPen)
-                        painter.setBrush(QColor("#e9c880" if task.locked_segments else "#79ab78"))
+                        painter.setBrush(
+                            QColor(
+                                colors()["warning_ink"]
+                                if task.locked_segments
+                                else colors()["task"]
+                            )
+                        )
                         painter.drawRoundedRect(QRectF(begin, y, rect.width(), 23), 5, 5)
-        painter.setPen(QPen(QColor("#3d7952"), 2))
+        painter.setPen(QPen(QColor(colors()["accent"]), 2))
         painter.drawLine(int(x(self.now)), 25, int(x(self.now)), self.height() - 8)
 
 
@@ -646,6 +655,7 @@ class MainWindow(QMainWindow):
         self.store = store
         self.now = now
         self.revision = 0
+        apply_theme(QApplication.instance(), store.get("appearance", "light"))
         self.plan = None
         self.workers = {}
         self.last_check = now()
@@ -686,7 +696,7 @@ class MainWindow(QMainWindow):
         self.nav_group = QButtonGroup(self)
         self.sidebar_labels = [brand, tagline, caption]
         self.page_names = [
-            "План на сьогодні",
+            "Мій день",
             "Графік живлення",
             "Мої пристрої",
             "Резерв та автономність",
@@ -696,7 +706,7 @@ class MainWindow(QMainWindow):
         for index, (name, glyph) in enumerate(
             zip(
                 [
-                    "Огляд дня",
+                    "Мій день",
                     "Графік живлення",
                     "Пристрої",
                     "Автономність",
@@ -759,32 +769,7 @@ class MainWindow(QMainWindow):
         self.status.setWordWrap(True)
         self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout.addWidget(self.status)
-        self.metrics_widget = QWidget()
-        metrics = QHBoxLayout(self.metrics_widget)
-        metrics.setContentsMargins(0, 0, 0, 0)
-        metrics.setSpacing(14)
-        self.metric_labels = []
-        for caption, hint in [
-            ("ЕЛЕКТРОПОСТАЧАННЯ", "За актуальним графіком"),
-            ("АКТИВНІ ЗАДАЧІ", "У вашому плані"),
-            ("РЕЗЕРВ ЕНЕРГІЇ", "Доступно вище мінімуму"),
-        ]:
-            card = QFrame()
-            card.setObjectName("metric")
-            box = QVBoxLayout(card)
-            box.setContentsMargins(18, 16, 18, 16)
-            box.setSpacing(6)
-            name, value, description = QLabel(caption), QLabel("—"), QLabel(hint)
-            for label in (name, value, description):
-                label.setWordWrap(True)
-                label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-            name.setObjectName("metricCaption")
-            value.setObjectName("metricValue")
-            description.setObjectName("metricHint")
-            for label in (name, value, description):
-                box.addWidget(label)
-            metrics.addWidget(card, 1)
-            self.metric_labels.append((value, description))
+        self.lead_frame = self.build_day_lead()
         self.tabs = QTabWidget()
         self.tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.tabs.tabBar().hide()
@@ -795,7 +780,7 @@ class MainWindow(QMainWindow):
         today_layout = QVBoxLayout(today)
         today_layout.setContentsMargins(0, 0, 0, 0)
         today_layout.setSpacing(14)
-        today_layout.addWidget(self.metrics_widget)
+        today_layout.addWidget(self.lead_frame)
         timeline_panel = QFrame()
         self.timeline_panel = timeline_panel
         timeline_panel.setObjectName("timelinePanel")
@@ -821,7 +806,6 @@ class MainWindow(QMainWindow):
         timeline_scroll.setWidgetResizable(True)
         timeline_scroll.setWidget(self.timeline)
         timeline_box.addWidget(timeline_scroll)
-        today_layout.addWidget(timeline_panel)
         task_heading = QHBoxLayout()
         title = QLabel("Ваші задачі")
         title.setObjectName("sectionTitle")
@@ -830,14 +814,30 @@ class MainWindow(QMainWindow):
         self.task_count = QLabel()
         self.task_count.setObjectName("muted")
         task_heading.addWidget(self.task_count)
-        today_layout.addLayout(task_heading)
+        button(
+            "До таймлайна",
+            lambda: self.cards_scroll.ensureWidgetVisible(self.timeline_panel),
+            task_heading,
+        )
         self.cards_widget = QWidget()
         self.cards = QVBoxLayout(self.cards_widget)
         self.cards.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self.cards.setContentsMargins(0, 0, 6, 0)
         self.cards.setSpacing(12)
         self.cards.setAlignment(Qt.AlignmentFlag.AlignTop)
-        today_layout.addWidget(self.cards_widget)
+        tasks_column = QWidget()
+        tasks_box = QVBoxLayout(tasks_column)
+        tasks_box.setContentsMargins(0, 0, 0, 0)
+        tasks_box.setSpacing(12)
+        tasks_box.addLayout(task_heading)
+        tasks_box.addWidget(self.cards_widget)
+        self.overview_columns = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self.overview_columns.setSpacing(18)
+        self.overview_columns.addWidget(tasks_column, 1)
+        self.reserve_summary = self.build_reserve_summary()
+        self.overview_columns.addWidget(self.reserve_summary, 0, Qt.AlignmentFlag.AlignTop)
+        today_layout.addLayout(self.overview_columns)
+        today_layout.addWidget(timeline_panel)
         today_layout.addStretch()
         today_scroll = scroll_page(today)
         self.cards_scroll = today_scroll
@@ -893,6 +893,11 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(scroll_page(inbox), "Сповіщення")
         settings = QWidget()
         form = QFormLayout(settings)
+        self.appearance = QComboBox()
+        self.appearance.addItems(["Світла · тепла теракота", "Темна · тепла теракота"])
+        self.appearance.setCurrentIndex(self.store.get("appearance", "light") == "dark")
+        self.appearance.currentIndexChanged.connect(self.change_appearance)
+        form.addRow("Оформлення", self.appearance)
         self.power = number(1, 100000, store.get("power_limit", 3500), " Вт")
         self.background = number(0, 100000, store.get("background_power", 0), " Вт")
         form.addRow("Ліміт потужності мережі", self.power)
@@ -971,8 +976,165 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if hasattr(self, "timeline_legend"):
+        if hasattr(self, "reserve_summary"):
             self.adapt_layout()
+
+    def build_day_lead(self):
+        frame = QFrame()
+        frame.setObjectName("dayLead")
+        box = QVBoxLayout(frame)
+        box.setContentsMargins(22, 20, 22, 20)
+        box.setSpacing(9)
+        self.lead_source = QLabel("За графіком")
+        self.lead_source.setObjectName("muted")
+        self.lead_title = QLabel("Готую ваш день…")
+        self.lead_title.setObjectName("leadTitle")
+        self.lead_detail = QLabel()
+        self.next_action = QLabel()
+        for label in (self.lead_source, self.lead_title, self.lead_detail, self.next_action):
+            label.setWordWrap(True)
+            box.addWidget(label)
+        return frame
+
+    def build_reserve_summary(self):
+        frame = QFrame()
+        frame.setObjectName("reserveSummary")
+        frame.setMaximumWidth(250)
+        box = QVBoxLayout(frame)
+        box.setContentsMargins(18, 20, 18, 20)
+        box.setSpacing(12)
+        caption = QLabel("РЕЗЕРВ · РОЗРАХУНОК")
+        caption.setObjectName("muted")
+        self.reserve_value = QLabel("Не налаштовано")
+        self.reserve_value.setObjectName("reserveValue")
+        self.reserve_description = QLabel("Додайте резервне джерело, щоб оцінити автономність.")
+        note = QLabel("Оцінка за введеними параметрами, без автоматичного вимірювання.")
+        note.setObjectName("muted")
+        for label in (caption, self.reserve_value, self.reserve_description, note):
+            label.setWordWrap(True)
+            box.addWidget(label)
+        button("Переглянути автономність", lambda: self.tabs.setCurrentIndex(3), box)
+        return frame
+
+    def refresh_day_lead(self, now, power, actual, tasks, profile):
+        change = next_power_change(
+            self.store.get("week", blank_week()), self.store.get("overrides", []), now
+        )
+        self.lead_source.setText("ПІДТВЕРДЖЕНО ВАМИ" if actual else "ПРОГНОЗ ЗА ГРАФІКОМ")
+        state = (
+            "світло є" if power is True else "немає світла" if power is False else "стан не задано"
+        )
+        if actual:
+            self.lead_title.setText("Ви підтвердили: " + state)
+        elif power is True and change:
+            self.lead_title.setText(f"За графіком світло є до {change[0]:%H:%M}")
+        else:
+            self.lead_title.setText("За графіком зараз " + state)
+        if change:
+            minutes = max(0, int((change[0].timestamp() - now.timestamp()) / 60))
+            transition = (
+                "живлення"
+                if change[1] is True
+                else "відключення"
+                if change[1] is False
+                else "зміни даних"
+            )
+            self.lead_detail.setText(
+                f"До наступного {transition}: {minutes // 60} год {minutes % 60} хв · {change[0]:%d.%m %H:%M}. За актуальним графіком."
+            )
+        else:
+            self.lead_detail.setText(
+                "У найближчі 7 днів зміни стану не задані. Графік можна уточнити вручну."
+            )
+        by_id = {task.id: task for task in tasks}
+        upcoming = sorted(
+            (s for s in self.plan.segments if s.task_id in by_id and s.end > now),
+            key=lambda s: s.start,
+        )
+        running = next((task for task in tasks if task.status == "running"), None)
+        if running:
+            self.next_action.setText(
+                f"У роботі за вашим підтвердженням: {running.name}. Уточніть результат після завершення."
+            )
+        elif self.plan.conflicts:
+            self.next_action.setText(
+                "Деякі справи не вміщуються. Перегляньте пояснення на картках і змініть дедлайн або графік."
+            )
+        elif upcoming:
+            segment = upcoming[0]
+            task = by_id[segment.task_id]
+            self.next_action.setText(
+                f"У роботі за вашим підтвердженням: {task.name}."
+                if task.status == "running"
+                else f"Наступна справа: {task.name} · {segment.start.astimezone(now.tzinfo):%d.%m %H:%M}. Початок підтверджуєте ви."
+            )
+        else:
+            self.next_action.setText("Додайте задачу — і тут з’явиться наступна рекомендована дія.")
+        if not profile.enabled:
+            self.reserve_value.setText("Не налаштовано")
+            self.reserve_description.setText("Додайте резервне джерело, щоб оцінити автономність.")
+            return
+        load = sum(
+            device.power for device in self.store.devices() if device.id in profile.compatible_ids
+        )
+        hours = profile.autonomy_hours(load)
+        if load > profile.output_w:
+            value = "Завелике навантаження"
+        elif hours is None:
+            value = "Оберіть навантаження"
+        else:
+            minutes = int(hours * 60)
+            value = f"≈ {minutes // 60} год {minutes % 60} хв"
+        self.reserve_value.setText(value)
+        self.reserve_description.setText(
+            f"Сценарій: усі сумісні пристрої · {load:g} Вт. Доступно {profile.usable_wh:.0f} Вт·год вище мінімуму."
+        )
+
+    def change_appearance(self):
+        mode = "dark" if self.appearance.currentIndex() else "light"
+        self.store.set("appearance", mode)
+        apply_theme(QApplication.instance(), mode)
+        self.editor.render()
+        self.refresh_devices()
+        self.sidebar_toggle.setIcon(
+            icon("menu" if self.sidebar_collapsed else "panel-close", colors()["accent"])
+        )
+        self.replan()
+
+    def change_deadline(self, task):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Змінити дедлайн")
+        form = dialog_form(dialog)
+        explanation = QLabel(
+            self.plan.conflicts.get(task.id, "Оберіть новий термін завершення задачі.")
+        )
+        explanation.setWordWrap(True)
+        form.addRow(explanation)
+        now = self.now()
+        deadline = max(
+            datetime.fromisoformat(task.deadline).astimezone(now.tzinfo), now + timedelta(minutes=1)
+        )
+        editor = QDateTimeEdit(deadline.replace(tzinfo=None))
+        editor.setDisplayFormat("dd.MM.yyyy HH:mm")
+        editor.setCalendarPopup(True)
+        form.addRow("Завершити до", editor)
+        controls = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        controls.button(QDialogButtonBox.StandardButton.Save).setText("Перепланувати")
+        controls.button(QDialogButtonBox.StandardButton.Cancel).setText("Скасувати")
+        controls.accepted.connect(dialog.accept)
+        controls.rejected.connect(dialog.reject)
+        form.addRow(controls)
+        fit_window(dialog, (460, 300), (320, 220))
+        if dialog.exec():
+            chosen = editor.dateTime().toPython().replace(tzinfo=now.tzinfo)
+            if chosen <= self.now():
+                QMessageBox.warning(self, "Перевірте дедлайн", "Оберіть майбутній час")
+                return
+            task.deadline = chosen.isoformat()
+            self.store.save(task)
+            self.replan()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1004,12 +1166,13 @@ class MainWindow(QMainWindow):
         compact = automatic if self.sidebar_override is None else self.sidebar_override
         narrow = self.width() - (76 if compact else 205) < 684
         short = self.height() < 520
-        mode = (compact, narrow, short)
+        stacked = self.width() - (76 if compact else 205) < 900
+        mode = (compact, narrow, short, stacked)
         if getattr(self, "_layout_mode", None) == mode:
             return
         self._layout_mode = mode
         self.sidebar_collapsed = compact
-        self.sidebar_toggle.setIcon(icon("menu" if compact else "panel-close", "#426a51"))
+        self.sidebar_toggle.setIcon(icon("menu" if compact else "panel-close", colors()["accent"]))
         toggle_text = "Розгорнути меню" if compact else "Згорнути меню"
         self.sidebar_toggle.setToolTip(toggle_text)
         self.sidebar_toggle.setAccessibleName(toggle_text)
@@ -1032,8 +1195,10 @@ class MainWindow(QMainWindow):
             QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight
         )
         self.timeline_legend.setVisible(not narrow)
-        for value, _ in self.metric_labels:
-            value.setStyleSheet("font-size: 14pt" if narrow else "")
+        self.overview_columns.setDirection(
+            QBoxLayout.Direction.TopToBottom if stacked else QBoxLayout.Direction.LeftToRight
+        )
+        self.reserve_summary.setMaximumWidth(16777215 if stacked else 250)
 
     def toggle_sidebar(self):
         self.sidebar_override = not self.sidebar_collapsed
@@ -1042,7 +1207,6 @@ class MainWindow(QMainWindow):
 
     def navigate(self, index):
         self.page_title.setText(self.page_names[index])
-        self.metrics_widget.setVisible(index == 0)
         self.nav_group.button(index).setChecked(True)
 
     def planning_arguments(self, tasks=None):
@@ -1268,7 +1432,9 @@ class MainWindow(QMainWindow):
                 f"{device.name}\n{device.power:g} Вт · {detail} · пріоритет {device.priority}"
             )
             item = self.device_list.item(self.device_list.count() - 1)
-            item.setIcon(icon("battery" if device.kind == "battery" else "devices", "#639274", 28))
+            item.setIcon(
+                icon("battery" if device.kind == "battery" else "devices", colors()["accent"], 28)
+            )
             item.setSizeHint(QSize(200, 72))
         if hasattr(self, "reserve_panel"):
             self.reserve_panel.reload_devices()
@@ -1338,18 +1504,6 @@ class MainWindow(QMainWindow):
         tasks = self.store.tasks()
         active = [task for task in tasks if task.status not in {"done", "cancelled"}]
         self.task_count.setText(f"Активних: {len(active)} · Усього: {len(tasks)}")
-        self.metric_labels[0][0].setText(
-            "Є світло" if power is True else "Без світла" if power is False else "Немає даних"
-        )
-        self.metric_labels[0][1].setText(
-            "Підтверджено вами" if actual else "За графіком електропостачання"
-        )
-        self.metric_labels[1][0].setText(f"{len(active)} активних")
-        self.metric_labels[1][1].setText(
-            f"{len(self.plan.conflicts)} потребують уваги"
-            if self.plan.conflicts
-            else "Усе готово до вашого дня"
-        )
         self.timeline.plan = self.plan
         self.timeline.tasks = active
         self.timeline.week = week
@@ -1359,14 +1513,7 @@ class MainWindow(QMainWindow):
         self.timeline_panel.setMinimumHeight(max(140, 85 + 36 * min(len(active), 4)) + 68)
         self.timeline.update()
         profile = self.planning_arguments()["battery"]
-        self.metric_labels[2][0].setText(
-            f"{profile.usable_wh:.0f} Вт·год" if profile.enabled else "Не підключено"
-        )
-        self.metric_labels[2][1].setText(
-            f"Заряд {profile.charge:.0f}% · мінімум {profile.reserve:.0f}%"
-            if profile.enabled
-            else "Налаштуйте на вкладці «Автономність»"
-        )
+        self.refresh_day_lead(now, power, actual, active, profile)
         self.reserve_panel.plan_result.setText(
             f"План використає резерв: {self.plan.reserve_used_wh:.1f} Вт·год. "
             f"Доступний залишок вище мінімуму: {max(0, profile.usable_wh - self.plan.reserve_used_wh):.1f} Вт·год."
@@ -1382,7 +1529,29 @@ class MainWindow(QMainWindow):
             "done": "Виконано",
             "cancelled": "Скасовано",
         }
-        for task in reversed(tasks):
+        starts = {
+            task.id: min(
+                (s.start.timestamp() for s in self.plan.segments if s.task_id == task.id),
+                default=float("inf"),
+            )
+            for task in tasks
+        }
+        ordered = sorted(
+            tasks,
+            key=lambda task: (
+                0
+                if task.status == "running"
+                else 1
+                if task.id in self.plan.conflicts
+                else 3
+                if task.status in {"done", "cancelled"}
+                else 2,
+                starts[task.id],
+                -task.priority,
+                task.id,
+            ),
+        )
+        for task in ordered:
             card = QFrame()
             card.setProperty("task_id", task.id)
             card.setObjectName("card")
@@ -1394,12 +1563,16 @@ class MainWindow(QMainWindow):
             glyph = QLabel()
             glyph.setPixmap(
                 icon(
-                    "battery" if device and device.kind == "battery" else "devices", "#639274", 24
+                    "battery" if device and device.kind == "battery" else "devices",
+                    colors()["accent"],
+                    24,
                 ).pixmap(QSize(24, 24), self.devicePixelRatioF())
             )
             heading.addWidget(glyph)
             label = QLabel(task.name)
-            label.setStyleSheet("font-weight: 650; font-size: 11pt; color: #254638")
+            label.setObjectName("cardTitle")
+            label.setWordWrap(True)
+            label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             heading.addWidget(label, 1)
             badge = QLabel(
                 "Конфлікт"
@@ -1414,22 +1587,24 @@ class MainWindow(QMainWindow):
             )
             heading.addWidget(badge)
             layout.addLayout(heading)
-            info = states.get(task.status, task.status)
+            info = ""
             segments = [s for s in self.plan.segments if s.task_id == task.id]
             if task.id in self.plan.conflicts:
                 info = "Конфлікт: " + self.plan.conflicts[task.id]
             elif segments:
-                info += " · " + ", ".join(
+                info = ", ".join(
                     f"{s.start.astimezone(now.tzinfo):%d.%m %H:%M}–"
                     f"{s.end.astimezone(now.tzinfo):%H:%M}"
                     for s in segments
                 )
+            importance = {1: "низька", 2: "невисока", 3: "звичайна", 4: "висока", 5: "найвища"}
             info += (
-                f"\nПідтверджено: {task.completed}/{task.minutes} хв · "
-                f"до {datetime.fromisoformat(task.deadline).astimezone(now.tzinfo):%d.%m %H:%M}"
-                f" · пріоритет {task.priority}"
+                f"\nДедлайн {datetime.fromisoformat(task.deadline).astimezone(now.tzinfo):%d.%m %H:%M}"
+                f" · важливість: {importance[task.priority]}"
             )
-            detail = QLabel(info)
+            if task.completed:
+                info += f" · підтверджено {task.completed} із {task.minutes} хв"
+            detail = QLabel(info.lstrip())
             detail.setObjectName("muted")
             detail.setWordWrap(True)
             layout.addWidget(detail)
@@ -1441,9 +1616,15 @@ class MainWindow(QMainWindow):
                 layout.addWidget(progress)
             if task.status not in {"done", "cancelled"}:
                 actions = QHBoxLayout()
-                if task.status != "running":
+                if task.id in self.plan.conflicts and task.status != "running":
                     button(
-                        "Продовжити" if task.completed else "Почати",
+                        "Змінити дедлайн",
+                        lambda checked=False, t=task: self.change_deadline(t),
+                        actions,
+                    ).setObjectName("primary")
+                elif task.status != "running":
+                    button(
+                        "Продовжую" if task.completed else "Я починаю",
                         lambda checked=False, t=task: self.task_action(t, "running"),
                         actions,
                     ).setObjectName("primary")
@@ -1742,6 +1923,7 @@ class MainWindow(QMainWindow):
         self.power.setValue(self.store.get("power_limit", 3500))
         self.background.setValue(self.store.get("background_power", 0))
         self.notifications.setChecked(self.store.get("notifications", True))
+        self.appearance.setCurrentIndex(self.store.get("appearance", "light") == "dark")
         self.algorithm.setCurrentIndex(self.store.get("algorithm", "greedy") == "dp")
         self.sidebar_override = self.store.get("sidebar_collapsed", None)
         self._layout_mode = None

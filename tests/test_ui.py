@@ -147,7 +147,9 @@ def workspace_window(app, tmp_path):
 def test_dragging_timeline_persists_and_unlocks(app, workspace_window):
     window, store, _, task, _ = workspace_window
     timeline = window.timeline
+    window.cards_scroll.ensureWidgetVisible(window.timeline_panel)
     app.processEvents()
+    timeline.repaint()
     rect, segment = timeline.hits[0]
     begin = rect.center().toPoint()
     delta = round((timeline.width() - 150) / 24)
@@ -310,7 +312,7 @@ def test_small_windows_keep_all_pages_reachable(app, workspace_window, width, he
         page = window.tabs.widget(index)
         assert page.viewport().width() > 0 and page.viewport().height() > 0
     window.tabs.setCurrentIndex(0)
-    window.cards_scroll.ensureWidgetVisible(window.cards.itemAt(0).widget())
+    window.cards_scroll.ensureWidgetVisible(window.timeline_panel)
     app.processEvents()
     assert window.cards_scroll.verticalScrollBar().value() > 0
 
@@ -384,3 +386,51 @@ def test_vector_icons_render_at_native_display_density(app, scale):
     assert image.height() == round(32 * scale)
     assert image.devicePixelRatioF() == pytest.approx(scale)
     assert not image.toImage().isNull()
+
+
+def test_terracotta_themes_switch_without_losing_data(app, workspace_window):
+    from PySide6.QtGui import QPalette
+
+    from blackout_planner.appearance import DARK, LIGHT
+
+    window, store, _, task, _ = workspace_window
+    window.appearance.setCurrentIndex(1)
+    wait_plan(app, window)
+    assert store.get("appearance") == "dark"
+    assert app.palette().color(QPalette.ColorRole.Window).name().upper() == DARK["background"]
+    assert store.tasks()[0].id == task.id
+    window.appearance.setCurrentIndex(0)
+    wait_plan(app, window)
+    assert app.palette().color(QPalette.ColorRole.Window).name().upper() == LIGHT["background"]
+
+
+def test_day_lead_distinguishes_user_confirmation_from_forecast(app, workspace_window):
+    window, _, _, _, clock = workspace_window
+    assert "ГРАФІКОМ" in window.lead_source.text()
+    window.apply_power_change(
+        {
+            "start": clock["now"].isoformat(),
+            "end": (clock["now"] + timedelta(hours=1)).isoformat(),
+            "power": False,
+        }
+    )
+    wait_plan(app, window)
+    assert window.lead_source.text() == "ПІДТВЕРДЖЕНО ВАМИ"
+    assert "немає світла" in window.lead_title.text()
+
+
+def test_deadline_editor_replans_existing_task(app, workspace_window, monkeypatch):
+    from PySide6.QtWidgets import QDateTimeEdit
+
+    window, store, _, task, clock = workspace_window
+
+    def choose_deadline(dialog):
+        dialog.findChild(QDateTimeEdit).setDateTime((clock["now"] + timedelta(hours=8)).replace(tzinfo=None))
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", choose_deadline)
+    window.change_deadline(task)
+    wait_plan(app, window)
+    saved = store.tasks()[0]
+    assert saved.id == task.id
+    assert datetime.fromisoformat(saved.deadline) == clock["now"] + timedelta(hours=8)

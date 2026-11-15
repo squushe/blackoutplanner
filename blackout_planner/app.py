@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from PySide6.QtCore import QCoreApplication, QEvent, QStandardPaths, QThreadPool
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
+from .appearance import apply_theme
 from .instance import SingleInstance
 from .storage import Store
 from .ui import MainWindow, Onboarding, configure_application
@@ -32,6 +33,7 @@ def main():
     if not instance.acquire(activate=not arguments.background):
         return
     store = Store(folder / "planner.sqlite3")
+    apply_theme(app, store.get("appearance", "light"))
 
     def now():
         return datetime.now(ZoneInfo(store.get("timezone", "Europe/Kyiv")))

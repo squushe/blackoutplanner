@@ -126,6 +126,8 @@ class Store:
             ZoneInfo(settings.get("timezone", "Europe/Kyiv"))
             if settings.get("algorithm", "greedy") not in {"greedy", "dp"}:
                 raise ValueError("Невідомий алгоритм у резервній копії")
+            if settings.get("appearance", "light") not in {"light", "dark"}:
+                raise ValueError("Невідома тема оформлення в резервній копії")
             if (
                 settings.get("sidebar_collapsed") is not None
                 and type(settings["sidebar_collapsed"]) is not bool
