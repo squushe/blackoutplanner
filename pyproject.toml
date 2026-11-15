@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blackout-planner"
+version = "0.1.0"
+description = "Локальний планувальник побутових задач за графіком електропостачання"
+requires-python = ">=3.12"
+dependencies = ["PySide6>=6.8,<7", "tzdata>=2024.1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-qt>=4.4", "ruff>=0.9"]
+
+[project.scripts]
+blackout-planner = "blackout_planner.app:main"
+
+[tool.setuptools.packages.find]
+include = ["blackout_planner*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
