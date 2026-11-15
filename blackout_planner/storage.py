@@ -127,8 +127,10 @@ class Store:
             if settings.get("algorithm", "greedy") not in {"greedy", "dp"}:
                 raise ValueError("Невідомий алгоритм у резервній копії")
             history = settings.get("notification_history", {})
-            if not isinstance(history, dict) or any(not isinstance(key, str) or not isinstance(value, str)
-                                                    for key, value in history.items()):
+            if not isinstance(history, dict) or any(
+                not isinstance(key, str) or not isinstance(value, str)
+                for key, value in history.items()
+            ):
                 raise ValueError("Некоректна історія нагадувань")
             if not isinstance(settings.get("notification_inbox", []), list):
                 raise ValueError("Некоректний журнал сповіщень")

@@ -139,6 +139,7 @@ class ReservePanel(QWidget):
         save.clicked.connect(self.save)
         layout.addWidget(save)
         self.simulation.itemChanged.connect(self.calculate)
+        self.compatible.itemChanged.connect(self.calculate)
         self.reload_devices()
 
     def reload_devices(self):
@@ -192,7 +193,11 @@ class ReservePanel(QWidget):
         try:
             profile = self.profile()
             hours = profile.autonomy_hours(power)
-            if power > profile.output_w:
+            if selected - set(profile.compatible_ids):
+                message = (
+                    "Є недозволені навантаження: позначте їх сумісними або вимкніть у сценарії"
+                )
+            elif power > profile.output_w:
                 message = "Перевищено вихідну потужність резерву"
             elif hours is None:
                 message = "Немає активного споживання"

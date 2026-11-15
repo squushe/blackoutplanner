@@ -52,11 +52,23 @@ def test_calendar_utf8_folding_escaping_and_stable_ids():
     assert data.endswith(b"END:VCALENDAR\r\n")
 
 
-@pytest.mark.parametrize("key,value", [
-    ("overrides", [{"start": "2026-11-16T12:00:00+00:00", "end": "2026-11-16T11:00:00+00:00", "power": False}]),
-    ("power_limit", -100),
-    ("algorithm", "unknown"),
-])
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        (
+            "overrides",
+            [
+                {
+                    "start": "2026-11-16T12:00:00+00:00",
+                    "end": "2026-11-16T11:00:00+00:00",
+                    "power": False,
+                }
+            ],
+        ),
+        ("power_limit", -100),
+        ("algorithm", "unknown"),
+    ],
+)
 def test_invalid_backup_settings_are_rejected_before_restore(tmp_path, key, value):
     current = Store(tmp_path / "live.sqlite3")
     current.save(Device("Поточний пристрій"))

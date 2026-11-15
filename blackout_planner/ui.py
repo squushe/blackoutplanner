@@ -735,9 +735,15 @@ class MainWindow(QMainWindow):
         self.notice_detail.setWordWrap(True)
         inbox_layout.addWidget(self.notice_detail)
         actions = QHBoxLayout()
-        button("Відкрити задачу / план", lambda: self.notice_action("open"), actions)
-        button("Перенести на завтра", lambda: self.notice_action("tomorrow"), actions)
-        button("Підтвердити виконання", lambda: self.notice_action("done"), actions)
+        self.notice_open = button(
+            "Відкрити задачу / план", lambda: self.notice_action("open"), actions
+        )
+        self.notice_tomorrow = button(
+            "Перенести на завтра", lambda: self.notice_action("tomorrow"), actions
+        )
+        self.notice_done = button(
+            "Підтвердити виконання", lambda: self.notice_action("done"), actions
+        )
         inbox_layout.addLayout(actions)
         self.tabs.addTab(inbox, "Сповіщення")
         settings = QWidget()
@@ -1329,17 +1335,35 @@ class MainWindow(QMainWindow):
         self.notifier.send(notice)
 
     def refresh_inbox(self):
+        previous = self.current_notice
         self.inbox.clear()
-        for entry in reversed(self.store.get("notification_inbox", [])):
+        entries = list(reversed(self.store.get("notification_inbox", [])))
+        for entry in entries:
             self.inbox.addItem(
                 f"{datetime.fromisoformat(entry['time']):%d.%m %H:%M} · {entry['title']}"
             )
+        if entries:
+            self.inbox.setCurrentRow(entries.index(previous) if previous in entries else 0)
+        else:
+            self.select_notice(-1)
 
     def select_notice(self, row):
         entries = list(reversed(self.store.get("notification_inbox", [])))
         self.current_notice = entries[row] if 0 <= row < len(entries) else None
         if self.current_notice:
             self.notice_detail.setText(self.current_notice["body"])
+        task = next(
+            (
+                task
+                for task in self.store.tasks()
+                if self.current_notice and task.id == self.current_notice["task_id"]
+            ),
+            None,
+        )
+        self.notice_open.setEnabled(self.current_notice is not None)
+        available = task is not None and task.status not in {"done", "cancelled"}
+        self.notice_tomorrow.setEnabled(available)
+        self.notice_done.setEnabled(available)
 
     def notice_action(self, action):
         if self.current_notice:
