@@ -126,6 +126,11 @@ class Store:
             ZoneInfo(settings.get("timezone", "Europe/Kyiv"))
             if settings.get("algorithm", "greedy") not in {"greedy", "dp"}:
                 raise ValueError("Невідомий алгоритм у резервній копії")
+            if (
+                settings.get("sidebar_collapsed") is not None
+                and type(settings["sidebar_collapsed"]) is not bool
+            ):
+                raise ValueError("Некоректний стан бічного меню")
             history = settings.get("notification_history", {})
             if not isinstance(history, dict) or any(
                 not isinstance(key, str) or not isinstance(value, str)

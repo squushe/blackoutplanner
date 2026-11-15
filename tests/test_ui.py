@@ -15,6 +15,7 @@ from blackout_planner.domain import Device, Task
 from blackout_planner.instance import SingleInstance
 from blackout_planner.responsive import fit_window
 from blackout_planner.storage import Store, import_week
+from blackout_planner.theme import icon
 from blackout_planner.ui import (
     DeviceDialog,
     MainWindow,
@@ -356,3 +357,30 @@ def test_onboarding_fits_small_screen(app, tmp_path):
     wizard.reject()
     wizard.deleteLater()
     store.close()
+
+
+def test_sidebar_toggle_preserves_choice_and_centers_logo(app, workspace_window):
+    window, store, _, _, _ = workspace_window
+    for expected in (False, True):
+        QTest.mouseClick(window.sidebar_toggle, Qt.MouseButton.LeftButton)
+        app.processEvents()
+        assert window.sidebar_collapsed is expected
+        assert store.get("sidebar_collapsed") is expected
+        assert window.sidebar.width() == (76 if expected else 205)
+        center = window.brand_mark.geometry().center().x()
+        assert abs(center - window.sidebar.rect().center().x()) <= 1
+        window.resize(900 if expected else 700, 600)
+        app.processEvents()
+        assert window.sidebar_collapsed is expected
+    assert window.sidebar_toggle.accessibleName() == "Розгорнути меню"
+
+
+@pytest.mark.parametrize("scale", [1, 1.25, 1.5, 2, 3])
+def test_vector_icons_render_at_native_display_density(app, scale):
+    from PySide6.QtCore import QSize
+
+    image = icon("bolt", "#c8ed9b").pixmap(QSize(32, 32), scale)
+    assert image.width() == round(32 * scale)
+    assert image.height() == round(32 * scale)
+    assert image.devicePixelRatioF() == pytest.approx(scale)
+    assert not image.toImage().isNull()

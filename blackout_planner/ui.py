@@ -57,7 +57,7 @@ from .platform_services import Autostart
 from .progress import progress_since_start
 from .responsive import dialog_form, fit_window, scroll_page
 from .storage import import_week
-from .theme import STYLE, icon
+from .theme import STYLE, BrandMark, icon
 
 
 def configure_application(app):
@@ -653,6 +653,7 @@ class MainWindow(QMainWindow):
         self.startup_notice = True
         self.current_notice = None
         self.autostart = Autostart(store.path.parent)
+        self.sidebar_override = store.get("sidebar_collapsed", None)
         self.allow_exit = False
         self.setWindowTitle("Blackout Planner")
         self.setMinimumSize(560, 420)
@@ -668,9 +669,8 @@ class MainWindow(QMainWindow):
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(18, 28, 18, 25)
         side.setSpacing(7)
-        logo = QLabel()
-        logo.setPixmap(icon("bolt", "#c8ed9b", 32).pixmap(32, 32))
-        side.addWidget(logo)
+        self.brand_mark = BrandMark(sidebar)
+        side.addWidget(self.brand_mark, 0, Qt.AlignmentFlag.AlignHCenter)
         brand = QLabel("Blackout\nPlanner")
         brand.setObjectName("brand")
         side.addWidget(brand)
@@ -734,7 +734,19 @@ class MainWindow(QMainWindow):
         self.page_title.setObjectName("title")
         self.page_title.setWordWrap(True)
         self.page_title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        header.addWidget(self.page_title, 1)
+        title_group = QWidget()
+        title_layout = QHBoxLayout(title_group)
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(12)
+        self.sidebar_toggle = QPushButton()
+        self.sidebar_toggle.setObjectName("sidebarToggle")
+        self.sidebar_toggle.setFixedSize(38, 38)
+        self.sidebar_toggle.setIconSize(QSize(22, 22))
+        self.sidebar_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.sidebar_toggle.clicked.connect(self.toggle_sidebar)
+        title_layout.addWidget(self.sidebar_toggle)
+        title_layout.addWidget(self.page_title, 1)
+        header.addWidget(title_group, 1)
         header_actions = QWidget()
         actions = QHBoxLayout(header_actions)
         actions.setContentsMargins(0, 0, 0, 0)
@@ -988,13 +1000,21 @@ class MainWindow(QMainWindow):
             fit_window(self, (self.width(), self.height()), bounds=bounds)
 
     def adapt_layout(self):
-        compact = self.width() < 1120 or self.height() < 700
-        narrow = self.width() < 760
+        automatic = self.width() < 1120 or self.height() < 700
+        compact = automatic if self.sidebar_override is None else self.sidebar_override
+        narrow = self.width() - (76 if compact else 205) < 684
         short = self.height() < 520
         mode = (compact, narrow, short)
         if getattr(self, "_layout_mode", None) == mode:
             return
         self._layout_mode = mode
+        self.sidebar_collapsed = compact
+        self.sidebar_toggle.setIcon(icon("menu" if compact else "panel-close", "#426a51"))
+        toggle_text = "Розгорнути меню" if compact else "Згорнути меню"
+        self.sidebar_toggle.setToolTip(toggle_text)
+        self.sidebar_toggle.setAccessibleName(toggle_text)
+        self.sidebar_toggle.setCheckable(True)
+        self.sidebar_toggle.setChecked(not compact)
         self.sidebar.setFixedWidth(76 if compact else 205)
         self.sidebar.layout().setContentsMargins(
             8 if compact else 18, 8 if short else 24, 8 if compact else 18, 8 if short else 20
@@ -1003,7 +1023,7 @@ class MainWindow(QMainWindow):
         self.sidebar_gap.changeSize(0, 8 if compact else 32)
         self.sidebar.layout().invalidate()
         for label in self.sidebar_labels:
-            label.setVisible(not compact)
+            label.setVisible(not compact and not short)
         for item in self.nav_group.buttons():
             item.setText("" if compact else item.property("nav_name"))
             item.setStyleSheet("padding: 9px 10px;" if short else "")
@@ -1014,6 +1034,11 @@ class MainWindow(QMainWindow):
         self.timeline_legend.setVisible(not narrow)
         for value, _ in self.metric_labels:
             value.setStyleSheet("font-size: 14pt" if narrow else "")
+
+    def toggle_sidebar(self):
+        self.sidebar_override = not self.sidebar_collapsed
+        self.store.set("sidebar_collapsed", self.sidebar_override)
+        self.adapt_layout()
 
     def navigate(self, index):
         self.page_title.setText(self.page_names[index])
@@ -1370,7 +1395,7 @@ class MainWindow(QMainWindow):
             glyph.setPixmap(
                 icon(
                     "battery" if device and device.kind == "battery" else "devices", "#639274", 24
-                ).pixmap(24, 24)
+                ).pixmap(QSize(24, 24), self.devicePixelRatioF())
             )
             heading.addWidget(glyph)
             label = QLabel(task.name)
@@ -1718,6 +1743,9 @@ class MainWindow(QMainWindow):
         self.background.setValue(self.store.get("background_power", 0))
         self.notifications.setChecked(self.store.get("notifications", True))
         self.algorithm.setCurrentIndex(self.store.get("algorithm", "greedy") == "dp")
+        self.sidebar_override = self.store.get("sidebar_collapsed", None)
+        self._layout_mode = None
+        self.adapt_layout()
         for task in self.store.tasks():
             if task.status == "running":
                 task.status = "paused"
