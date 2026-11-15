@@ -8,7 +8,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRectF, QRunnable, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QObject, QRectF, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QFontDatabase, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -729,7 +729,7 @@ class MainWindow(QMainWindow):
         self.metric_labels = []
         for caption, hint in [
             ("ЕЛЕКТРОПОСТАЧАННЯ", "За актуальним графіком"),
-            ("ЗАДАЧІ НА ДЕНЬ", "У вашому плані"),
+            ("АКТИВНІ ЗАДАЧІ", "У вашому плані"),
             ("РЕЗЕРВ ЕНЕРГІЇ", "Доступно вище мінімуму"),
         ]:
             card = QFrame()
@@ -816,6 +816,7 @@ class MainWindow(QMainWindow):
         devices = QWidget()
         devices_layout = QVBoxLayout(devices)
         self.device_list = QListWidget()
+        self.device_list.setSpacing(6)
         self.device_list.itemDoubleClicked.connect(self.edit_device)
         devices_layout.addWidget(self.device_list)
         actions = QHBoxLayout()
@@ -1149,8 +1150,11 @@ class MainWindow(QMainWindow):
                 else f"цикл {device.duration} хв"
             )
             self.device_list.addItem(
-                f"{device.name}    {device.power:g} Вт    {detail}    пріоритет {device.priority}"
+                f"{device.name}\n{device.power:g} Вт · {detail} · пріоритет {device.priority}"
             )
+            item = self.device_list.item(self.device_list.count() - 1)
+            item.setIcon(icon("battery" if device.kind == "battery" else "devices", "#639274", 28))
+            item.setSizeHint(QSize(200, 72))
         if hasattr(self, "reserve_panel"):
             self.reserve_panel.reload_devices()
 
