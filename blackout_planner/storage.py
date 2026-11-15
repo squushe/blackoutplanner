@@ -3,14 +3,16 @@
 import csv
 import json
 import sqlite3
+from datetime import UTC, datetime
 from dataclasses import asdict
 from pathlib import Path
 
-from .domain import Device, Task, blank_week, validate_week
+from .domain import BatteryProfile, Device, Task, blank_week, validate_week
 
 
 class Store:
     def __init__(self, path: Path):
+        self.path = path.resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(path)
         self.connection.execute("PRAGMA journal_mode=WAL")
@@ -55,6 +57,53 @@ class Store:
 
     def close(self):
         self.connection.close()
+
+    def backup(self, destination: Path):
+        """SQLite backup включає підтверджені дані з WAL."""
+        destination = destination.resolve()
+        if destination == self.path or str(destination) in {str(self.path) + "-wal", str(self.path) + "-shm"}:
+            raise ValueError("Резервна копія має бути окремим файлом")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        from uuid import uuid4
+        temporary = destination.with_name(destination.name + "." + uuid4().hex + ".tmp")
+        try:
+            with sqlite3.connect(temporary) as target:
+                self.connection.backup(target)
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def restore(self, source: Path):
+        """Спочатку валідація і страхова копія, потім транзакційна заміна даних."""
+        source = source.resolve()
+        if source == self.path or not source.is_file():
+            raise ValueError("Оберіть наявну резервну копію, відмінну від робочої бази")
+        with sqlite3.connect(source.as_uri() + "?mode=ro", uri=True) as backup:
+            if backup.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise ValueError("Резервна копія пошкоджена")
+            if backup.execute("PRAGMA user_version").fetchone()[0] != 1:
+                raise ValueError("Непідтримувана версія бази")
+            records = {}
+            for table in ("devices", "tasks", "settings"):
+                records[table] = backup.execute(f"SELECT * FROM {table}").fetchall()
+            for _, payload in records["devices"]:
+                Device(**json.loads(payload)).validate()
+            for _, payload in records["tasks"]:
+                Task(**json.loads(payload)).validate()
+            settings = {key: json.loads(payload) for key, payload in records["settings"]}
+            if "week" in settings:
+                validate_week(settings["week"])
+            if "battery" in settings:
+                BatteryProfile(**settings["battery"]).validate()
+        from uuid import uuid4
+        safety = self.path.with_name("before-restore-" + datetime.now(UTC).strftime("%Y%m%d-%H%M%S-")
+                                     + uuid4().hex[:6] + ".sqlite3")
+        self.backup(safety)
+        with self.connection:
+            for table, rows in records.items():
+                self.connection.execute(f"DELETE FROM {table}")
+                self.connection.executemany(f"INSERT INTO {table} VALUES (?,?)", rows)
+        return safety
 
 
 def time_minutes(value, allow_end=False):
