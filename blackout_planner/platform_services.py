@@ -24,7 +24,7 @@ def launch_arguments(data_dir, executable=None, frozen=None):
 
 def desktop_exec(arguments):
     """Desktop Entry Exec: без shell, з екрануванням зарезервованих символів."""
-    return " ".join(
+    quoted = " ".join(
         '"'
         + value.replace("\\", "\\\\")
         .replace('"', '\\"')
@@ -33,6 +33,9 @@ def desktop_exec(arguments):
         .replace("%", "%%")
         + '"'
         for value in arguments
+    )
+    return (
+        quoted.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
     )
 
 
@@ -65,8 +68,9 @@ class Autostart:
                 return False
         if self.platform.startswith("linux"):
             try:
-                return self.desktop_path.exists() and "Hidden=true" not in self.desktop_path.read_text(
-                    encoding="utf-8"
+                return (
+                    self.desktop_path.exists()
+                    and "Hidden=true" not in self.desktop_path.read_text(encoding="utf-8")
                 )
             except OSError as error:
                 self.last_error = str(error)

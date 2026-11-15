@@ -48,3 +48,33 @@ def test_plan_change_cancels_removed_power_transition():
     ]
     after = build_notices(week, overrides, Plan(), [], [], now)
     assert not any(event.at == now and event.kind == "outage" for event in after)
+
+
+def test_windows_autostart_uses_current_user_and_quoted_command(tmp_path, monkeypatch):
+    import sys
+    import types
+    from contextlib import nullcontext
+
+    entries = {}
+
+    def missing():
+        raise FileNotFoundError
+
+    registry = types.SimpleNamespace(
+        HKEY_CURRENT_USER=123,
+        REG_SZ=1,
+        OpenKey=lambda root, path: nullcontext(entries),
+        CreateKey=lambda root, path: nullcontext(entries),
+        SetValueEx=lambda key, name, reserved, kind, value: key.__setitem__(name, value),
+        QueryValueEx=lambda key, name: (key[name], 1) if name in key else missing(),
+        DeleteValue=lambda key, name: key.pop(name),
+    )
+    monkeypatch.setitem(sys.modules, "winreg", registry)
+    manager = Autostart(tmp_path / "folder with spaces", platform="win32")
+    assert not manager.enabled()
+    manager.set_enabled(True)
+    assert manager.enabled()
+    assert '"' in entries["BlackoutPlanner"]
+    assert "--background" in entries["BlackoutPlanner"]
+    manager.set_enabled(False)
+    assert not manager.enabled()
