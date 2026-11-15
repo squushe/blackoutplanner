@@ -12,6 +12,7 @@ from PySide6.QtCore import QObject, QRectF, QRunnable, QSize, Qt, QThreadPool, Q
 from PySide6.QtGui import QAction, QColor, QFont, QFontDatabase, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QBoxLayout,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -54,6 +55,7 @@ from .notifier import Notifier
 from .panels import OutageDialog, ReservePanel
 from .platform_services import Autostart
 from .progress import progress_since_start
+from .responsive import dialog_form, fit_window, scroll_page
 from .storage import import_week
 from .theme import STYLE, icon
 
@@ -114,7 +116,8 @@ class ScheduleEditor(QWidget):
         )
         label.setWordWrap(True)
         layout.addWidget(label)
-        actions = QHBoxLayout()
+        actions = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self.actions = actions
         button("Є світло", lambda: self.fill(True), actions)
         button("Немає світла", lambda: self.fill(False), actions)
         button("Увесь тиждень: є світло", lambda: self.fill(True, True), actions)
@@ -129,6 +132,14 @@ class ScheduleEditor(QWidget):
         self.table.cellClicked.connect(self.toggle)
         layout.addWidget(self.table)
         self.render()
+
+    def resizeEvent(self, event):
+        self.actions.setDirection(
+            QBoxLayout.Direction.TopToBottom
+            if self.width() < 700
+            else QBoxLayout.Direction.LeftToRight
+        )
+        super().resizeEvent(event)
 
     def render(self):
         for day in range(7):
@@ -193,10 +204,9 @@ class DeviceDialog(QDialog):
     def __init__(self, parent=None, device=None):
         super().__init__(parent)
         self.setWindowTitle("Редагування пристрою" if device else "Новий пристрій")
-        self.setMinimumWidth(470)
         self.device = device
         self.result_device = None
-        form = QFormLayout(self)
+        form = dialog_form(self)
         self.template = QComboBox()
         self.template.addItems(TEMPLATES)
         form.addRow("Шаблон", self.template)
@@ -252,6 +262,7 @@ class DeviceDialog(QDialog):
                 widget.setValue(value)
             self.interruptible.setChecked(device.interruptible)
         self.update_fields()
+        fit_window(self, (540, 640), (320, 300))
 
     def update_fields(self):
         battery = self.kind.currentIndex() == 1
@@ -299,8 +310,7 @@ class TaskDialog(QDialog):
         self.now = now
         self.result_task = None
         self.setWindowTitle("Нова задача")
-        self.setMinimumWidth(460)
-        form = QFormLayout(self)
+        form = dialog_form(self)
         self.device = QComboBox()
         self.device.addItems([d.name for d in devices])
         self.name = QLineEdit()
@@ -332,6 +342,7 @@ class TaskDialog(QDialog):
         self.device.currentIndexChanged.connect(self.select_device)
         self.target.valueChanged.connect(self.update_estimate)
         self.select_device(0)
+        fit_window(self, (520, 480), (320, 280))
 
     def select_device(self, index):
         device = self.devices[index]
@@ -403,7 +414,7 @@ class Onboarding(QWizard):
         self.tasks = []
         self.setWindowTitle("Ласкаво просимо до Blackout Planner")
         self.setWizardStyle(QWizard.WizardStyle.ClassicStyle)
-        self.resize(1050, 760)
+        fit_window(self, (1000, 720), (480, 360))
         self.setButtonText(QWizard.WizardButton.NextButton, "Далі")
         self.setButtonText(QWizard.WizardButton.BackButton, "Назад")
         self.setButtonText(QWizard.WizardButton.FinishButton, "Побудувати розклад")
@@ -509,7 +520,7 @@ class Timeline(QWidget):
     def __init__(self):
         super().__init__()
         self.setMinimumHeight(140)
-        self.setMinimumWidth(650)
+        self.setMinimumWidth(360)
         self.plan = None
         self.tasks = []
         self.week = blank_week()
@@ -644,14 +655,14 @@ class MainWindow(QMainWindow):
         self.autostart = Autostart(store.path.parent)
         self.allow_exit = False
         self.setWindowTitle("Blackout Planner")
-        self.resize(1380, 920)
-        self.setMinimumSize(1080, 760)
+        self.setMinimumSize(560, 420)
         root = QWidget()
         self.setCentralWidget(root)
         shell = QHBoxLayout(root)
         shell.setContentsMargins(0, 0, 0, 0)
         shell.setSpacing(0)
         sidebar = QFrame()
+        self.sidebar = sidebar
         sidebar.setObjectName("sidebar")
         sidebar.setFixedWidth(205)
         side = QVBoxLayout(sidebar)
@@ -668,10 +679,12 @@ class MainWindow(QMainWindow):
         tagline.setObjectName("brandSub")
         side.addWidget(tagline)
         side.addSpacing(32)
+        self.sidebar_gap = side.itemAt(side.count() - 1).spacerItem()
         caption = QLabel("РОБОЧИЙ ПРОСТІР")
         caption.setObjectName("navCaption")
         side.addWidget(caption)
         self.nav_group = QButtonGroup(self)
+        self.sidebar_labels = [brand, tagline, caption]
         self.page_names = [
             "План на сьогодні",
             "Графік живлення",
@@ -698,6 +711,8 @@ class MainWindow(QMainWindow):
             item.setIcon(icon(glyph))
             item.setCheckable(True)
             item.setCursor(Qt.CursorShape.PointingHandCursor)
+            item.setToolTip(name)
+            item.setProperty("nav_name", name)
             self.nav_group.addButton(item, index)
             side.addWidget(item)
         self.nav_group.button(0).setChecked(True)
@@ -705,22 +720,32 @@ class MainWindow(QMainWindow):
         footer = QLabel("ОФЛАЙН-РЕЖИМ\n\nЛокально · без хмари")
         footer.setObjectName("brandSub")
         side.addWidget(footer)
+        self.sidebar_labels.append(footer)
         shell.addWidget(sidebar)
         content = QWidget()
         layout = QVBoxLayout(content)
+        self.content_layout = layout
         layout.setContentsMargins(30, 28, 30, 20)
         layout.setSpacing(16)
         shell.addWidget(content, 1)
-        header = QHBoxLayout()
+        header = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self.header_layout = header
         self.page_title = QLabel(self.page_names[0])
         self.page_title.setObjectName("title")
-        header.addWidget(self.page_title)
-        header.addStretch()
-        button("Уточнити світло", self.correct_power, header)
-        button("+ Нова задача", self.add_task, header).setObjectName("primary")
+        self.page_title.setWordWrap(True)
+        self.page_title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        header.addWidget(self.page_title, 1)
+        header_actions = QWidget()
+        actions = QHBoxLayout(header_actions)
+        actions.setContentsMargins(0, 0, 0, 0)
+        button("Уточнити світло", self.correct_power, actions)
+        button("+ Нова задача", self.add_task, actions).setObjectName("primary")
+        header.addWidget(header_actions)
         layout.addLayout(header)
         self.status = QLabel()
         self.status.setObjectName("muted")
+        self.status.setWordWrap(True)
+        self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout.addWidget(self.status)
         self.metrics_widget = QWidget()
         metrics = QHBoxLayout(self.metrics_widget)
@@ -738,6 +763,9 @@ class MainWindow(QMainWindow):
             box.setContentsMargins(18, 16, 18, 16)
             box.setSpacing(6)
             name, value, description = QLabel(caption), QLabel("—"), QLabel(hint)
+            for label in (name, value, description):
+                label.setWordWrap(True)
+                label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             name.setObjectName("metricCaption")
             value.setObjectName("metricValue")
             description.setObjectName("metricHint")
@@ -745,8 +773,8 @@ class MainWindow(QMainWindow):
                 box.addWidget(label)
             metrics.addWidget(card, 1)
             self.metric_labels.append((value, description))
-        layout.addWidget(self.metrics_widget)
         self.tabs = QTabWidget()
+        self.tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.tabs.tabBar().hide()
         self.nav_group.idClicked.connect(self.tabs.setCurrentIndex)
         self.tabs.currentChanged.connect(self.navigate)
@@ -755,6 +783,7 @@ class MainWindow(QMainWindow):
         today_layout = QVBoxLayout(today)
         today_layout.setContentsMargins(0, 0, 0, 0)
         today_layout.setSpacing(14)
+        today_layout.addWidget(self.metrics_widget)
         timeline_panel = QFrame()
         self.timeline_panel = timeline_panel
         timeline_panel.setObjectName("timelinePanel")
@@ -769,6 +798,8 @@ class MainWindow(QMainWindow):
             '<span style="color:#73a66a">●</span> Живлення　 '
             '<span style="color:#a7b5ab">●</span> Відключення　 ↔ Перетягніть задачу'
         )
+        self.timeline_legend = legend
+        legend.setWordWrap(True)
         legend.setObjectName("muted")
         timeline_heading.addWidget(legend)
         timeline_box.addLayout(timeline_heading)
@@ -778,7 +809,7 @@ class MainWindow(QMainWindow):
         timeline_scroll.setWidgetResizable(True)
         timeline_scroll.setWidget(self.timeline)
         timeline_box.addWidget(timeline_scroll)
-        today_layout.addWidget(timeline_panel, 1)
+        today_layout.addWidget(timeline_panel)
         task_heading = QHBoxLayout()
         title = QLabel("Ваші задачі")
         title.setObjectName("sectionTitle")
@@ -794,12 +825,11 @@ class MainWindow(QMainWindow):
         self.cards.setContentsMargins(0, 0, 6, 0)
         self.cards.setSpacing(12)
         self.cards.setAlignment(Qt.AlignmentFlag.AlignTop)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.cards_widget)
-        self.cards_scroll = scroll
-        today_layout.addWidget(scroll, 2)
-        self.tabs.addTab(today, "Сьогодні")
+        today_layout.addWidget(self.cards_widget)
+        today_layout.addStretch()
+        today_scroll = scroll_page(today)
+        self.cards_scroll = today_scroll
+        self.tabs.addTab(today_scroll, "Сьогодні")
         self.editor = ScheduleEditor(store.get("week", blank_week()))
         schedule = QWidget()
         schedule_layout = QVBoxLayout(schedule)
@@ -812,7 +842,7 @@ class MainWindow(QMainWindow):
         button("+ Уточнення для дати", self.correct_power, override_actions)
         button("Видалити вибране уточнення", self.delete_override, override_actions)
         schedule_layout.addLayout(override_actions)
-        self.tabs.addTab(schedule, "Графік")
+        self.tabs.addTab(scroll_page(schedule), "Графік")
         devices = QWidget()
         devices_layout = QVBoxLayout(devices)
         self.device_list = QListWidget()
@@ -823,10 +853,10 @@ class MainWindow(QMainWindow):
         button("+ Додати пристрій", self.add_device, actions)
         button("Редагувати вибраний", self.edit_device, actions)
         devices_layout.addLayout(actions)
-        self.tabs.addTab(devices, "Пристрої")
+        self.tabs.addTab(scroll_page(devices), "Пристрої")
         self.reserve_panel = ReservePanel(store)
         self.reserve_panel.saved.connect(self.replan)
-        self.tabs.addTab(self.reserve_panel, "Автономність")
+        self.tabs.addTab(scroll_page(self.reserve_panel), "Автономність")
         inbox = QWidget()
         inbox_layout = QVBoxLayout(inbox)
         self.inbox = QListWidget()
@@ -848,7 +878,7 @@ class MainWindow(QMainWindow):
             "Підтвердити виконання", lambda: self.notice_action("done"), actions
         )
         inbox_layout.addLayout(actions)
-        self.tabs.addTab(inbox, "Сповіщення")
+        self.tabs.addTab(scroll_page(inbox), "Сповіщення")
         settings = QWidget()
         form = QFormLayout(settings)
         self.power = number(1, 100000, store.get("power_limit", 3500), " Вт")
@@ -892,7 +922,7 @@ class MainWindow(QMainWindow):
         )
         note.setWordWrap(True)
         form.addRow(note)
-        self.tabs.addTab(settings, "Налаштування")
+        self.tabs.addTab(scroll_page(settings), "Налаштування")
         self.tray = QSystemTrayIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon), self
         )
@@ -923,7 +953,67 @@ class MainWindow(QMainWindow):
         self.refresh_overrides()
         self.refresh_inbox()
         self.replan()
+        fit_window(self)
+        self.adapt_layout()
         QTimer.singleShot(1000, self.tick)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "timeline_legend"):
+            self.adapt_layout()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not hasattr(self, "_watched_screen"):
+            self.windowHandle().screenChanged.connect(self.watch_screen)
+            self.watch_screen(self.screen())
+
+    def watch_screen(self, screen):
+        previous = getattr(self, "_watched_screen", None)
+        if previous is not None:
+            previous.availableGeometryChanged.disconnect(self.keep_within_screen)
+        self._watched_screen = screen
+        if screen is not None:
+            screen.availableGeometryChanged.connect(self.keep_within_screen)
+            self.keep_within_screen()
+
+    def keep_within_screen(self, *args):
+        if self._watched_screen is None:
+            return
+        bounds = self._watched_screen.availableGeometry()
+        if (
+            self.frameGeometry().width() > bounds.width()
+            or self.frameGeometry().height() > bounds.height()
+        ):
+            fit_window(self, (self.width(), self.height()), bounds=bounds)
+
+    def adapt_layout(self):
+        compact = self.width() < 1120 or self.height() < 700
+        narrow = self.width() < 760
+        short = self.height() < 520
+        mode = (compact, narrow, short)
+        if getattr(self, "_layout_mode", None) == mode:
+            return
+        self._layout_mode = mode
+        self.sidebar.setFixedWidth(76 if compact else 205)
+        self.sidebar.layout().setContentsMargins(
+            8 if compact else 18, 8 if short else 24, 8 if compact else 18, 8 if short else 20
+        )
+        self.sidebar.layout().setSpacing(3 if compact else 7)
+        self.sidebar_gap.changeSize(0, 8 if compact else 32)
+        self.sidebar.layout().invalidate()
+        for label in self.sidebar_labels:
+            label.setVisible(not compact)
+        for item in self.nav_group.buttons():
+            item.setText("" if compact else item.property("nav_name"))
+            item.setStyleSheet("padding: 9px 10px;" if short else "")
+        self.content_layout.setContentsMargins(16 if compact else 30, 18, 16 if compact else 30, 16)
+        self.header_layout.setDirection(
+            QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight
+        )
+        self.timeline_legend.setVisible(not narrow)
+        for value, _ in self.metric_labels:
+            value.setStyleSheet("font-size: 14pt" if narrow else "")
 
     def navigate(self, index):
         self.page_title.setText(self.page_names[index])

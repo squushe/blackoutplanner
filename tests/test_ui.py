@@ -7,12 +7,13 @@ from zoneinfo import ZoneInfo
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent, QPoint, Qt, QThreadPool
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QRect, Qt, QThreadPool
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from blackout_planner.domain import Device, Task
 from blackout_planner.instance import SingleInstance
+from blackout_planner.responsive import fit_window
 from blackout_planner.storage import Store, import_week
 from blackout_planner.ui import (
     DeviceDialog,
@@ -292,3 +293,39 @@ def test_single_instance_reopens_existing_process(app, tmp_path):
         assert caller.wait(timeout=2) == 0
     finally:
         first.release()
+
+
+@pytest.mark.parametrize("width,height", [(1024, 600), (800, 600), (640, 480)])
+def test_small_windows_keep_all_pages_reachable(app, workspace_window, width, height):
+    window, _, _, _, _ = workspace_window
+    window.resize(width, height)
+    app.processEvents()
+    assert window.width() == width and window.height() == height
+    assert window.sidebar.width() == 76
+    for index in range(window.tabs.count()):
+        window.tabs.setCurrentIndex(index)
+        app.processEvents()
+        assert window.width() == width and window.height() == height
+        page = window.tabs.widget(index)
+        assert page.viewport().width() > 0 and page.viewport().height() > 0
+    window.tabs.setCurrentIndex(0)
+    window.cards_scroll.ensureWidgetVisible(window.cards.itemAt(0).widget())
+    app.processEvents()
+    assert window.cards_scroll.verticalScrollBar().value() > 0
+
+
+@pytest.mark.parametrize(
+    "bounds", [QRect(0, 0, 800, 600), QRect(-1280, 0, 1280, 720), QRect(0, 0, 480, 360)]
+)
+def test_window_sizing_respects_work_area_and_monitor_origin(app, bounds):
+    dialog = DeviceDialog()
+    fit_window(dialog, bounds=bounds)
+    assert bounds.contains(dialog.geometry())
+    assert dialog.minimumWidth() <= dialog.width()
+    assert dialog.minimumHeight() <= dialog.height()
+    dialog.close()
+
+
+def test_startup_window_fits_available_screen(app, workspace_window):
+    window, _, _, _, _ = workspace_window
+    assert window.screen().availableGeometry().contains(window.frameGeometry())

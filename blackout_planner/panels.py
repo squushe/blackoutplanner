@@ -5,6 +5,7 @@ from datetime import timedelta
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QBoxLayout,
     QCheckBox,
     QComboBox,
     QDateTimeEdit,
@@ -12,7 +13,6 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
-    QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from .domain import BatteryProfile
+from .responsive import dialog_form, fit_window
 
 
 def value_box(value, maximum, suffix):
@@ -39,7 +40,7 @@ class OutageDialog(QDialog):
         self.setWindowTitle("Уточнення електропостачання")
         self.zone = now.tzinfo
         self.change = None
-        form = QFormLayout(self)
+        form = dialog_form(self)
         self.power = QComboBox()
         self.power.addItems(["Світло зникло", "Світло з’явилося"])
         self.begin = QDateTimeEdit(now.replace(tzinfo=None, second=0, microsecond=0))
@@ -66,7 +67,7 @@ class OutageDialog(QDialog):
         buttons.accepted.connect(self.save)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
-        self.resize(500, 280)
+        fit_window(self, (520, 360), (320, 240))
 
     def save(self):
         begin = self.begin.dateTime().toPython().replace(tzinfo=self.zone)
@@ -94,6 +95,7 @@ class ReservePanel(QWidget):
         self.enabled.setChecked(profile.enabled)
         layout.addWidget(self.enabled)
         form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.capacity = value_box(profile.capacity_wh, 1000000, " Вт·год")
         self.charge = value_box(profile.charge, 100, " %")
         self.reserve = value_box(profile.reserve, 100, " %")
@@ -112,7 +114,8 @@ class ReservePanel(QWidget):
             widget.valueChanged.connect(self.calculate)
         layout.addLayout(form)
         layout.addWidget(self.transfer)
-        columns = QHBoxLayout()
+        columns = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self.columns = columns
         self.compatible = QListWidget()
         self.simulation = QListWidget()
         for title, widget in [
@@ -127,6 +130,7 @@ class ReservePanel(QWidget):
         self.result = QLabel()
         self.result.setWordWrap(True)
         self.plan_result = QLabel()
+        self.plan_result.setWordWrap(True)
         layout.addWidget(self.result)
         layout.addWidget(self.plan_result)
         note = QLabel(
@@ -141,6 +145,17 @@ class ReservePanel(QWidget):
         self.simulation.itemChanged.connect(self.calculate)
         self.compatible.itemChanged.connect(self.calculate)
         self.reload_devices()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "columns"):
+            self.columns.setDirection(
+                QBoxLayout.Direction.TopToBottom
+                if self.width() < 720
+                else QBoxLayout.Direction.LeftToRight
+            )
+            self.compatible.setMinimumHeight(130)
+            self.simulation.setMinimumHeight(130)
 
     def reload_devices(self):
         profile = BatteryProfile(**self.store.get("battery", {}))
