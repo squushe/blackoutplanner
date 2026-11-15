@@ -27,24 +27,31 @@ class Store:
 
     def set(self, key, value):
         with self.connection:
-            self.connection.execute("INSERT OR REPLACE INTO settings VALUES (?,?)",
-                                    (key, json.dumps(value, ensure_ascii=False)))
+            self.connection.execute(
+                "INSERT OR REPLACE INTO settings VALUES (?,?)",
+                (key, json.dumps(value, ensure_ascii=False)),
+            )
 
     def devices(self):
-        return [Device(**json.loads(row[0])) for row in
-                self.connection.execute("SELECT payload FROM devices ORDER BY rowid")]
+        return [
+            Device(**json.loads(row[0]))
+            for row in self.connection.execute("SELECT payload FROM devices ORDER BY rowid")
+        ]
 
     def tasks(self):
-        return [Task(**json.loads(row[0])) for row in
-                self.connection.execute("SELECT payload FROM tasks ORDER BY rowid")]
+        return [
+            Task(**json.loads(row[0]))
+            for row in self.connection.execute("SELECT payload FROM tasks ORDER BY rowid")
+        ]
 
     def save(self, value: Device | Task):
-        if isinstance(value, Device):
-            value.validate()
+        value.validate()
         table = "devices" if isinstance(value, Device) else "tasks"
         with self.connection:
-            self.connection.execute(f"INSERT OR REPLACE INTO {table} VALUES (?,?)",
-                                    (value.id, json.dumps(asdict(value), ensure_ascii=False)))
+            self.connection.execute(
+                f"INSERT OR REPLACE INTO {table} VALUES (?,?)",
+                (value.id, json.dumps(asdict(value), ensure_ascii=False)),
+            )
 
     def close(self):
         self.connection.close()
@@ -66,7 +73,9 @@ def import_week(path: str):
     """Формат: day (0=Пн), start, end, power (0/1); повний тиждень."""
     source = Path(path)
     with source.open(encoding="utf-8-sig", newline="") as stream:
-        rows = json.load(stream) if source.suffix.lower() == ".json" else list(csv.DictReader(stream))
+        rows = (
+            json.load(stream) if source.suffix.lower() == ".json" else list(csv.DictReader(stream))
+        )
     if not isinstance(rows, list):
         raise ValueError("JSON має містити список інтервалів")
     week = blank_week()

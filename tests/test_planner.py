@@ -1,15 +1,17 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from blackout_planner.domain import Device, Task, build_plan
 from blackout_planner.storage import Store, import_week
 
-NOW = datetime(2026, 11, 16, 8, tzinfo=timezone.utc)
+NOW = datetime(2026, 11, 16, 8, tzinfo=UTC)
 
 
 def task(device, minutes=60, hours=4, **kwargs):
-    return Task(device.id, device.name, minutes, (NOW + timedelta(hours=hours)).isoformat(), **kwargs)
+    return Task(
+        device.id, device.name, minutes, (NOW + timedelta(hours=hours)).isoformat(), **kwargs
+    )
 
 
 def test_non_interruptible_cannot_cross_outage():
@@ -49,8 +51,9 @@ def test_failed_task_does_not_reserve_partial_capacity():
 
 def test_same_device_does_not_run_two_tasks_at_once():
     device = Device("Пральна машина", power=100)
-    result = build_plan([device], [task(device), task(device)],
-                        [[True] * 48 for _ in range(7)], NOW)
+    result = build_plan(
+        [device], [task(device), task(device)], [[True] * 48 for _ in range(7)], NOW
+    )
     assert result.segments[0].end <= result.segments[1].start
 
 
@@ -95,3 +98,53 @@ def test_import_rejects_overlap_and_missing_intervals(tmp_path):
     source.write_text("day,start,end,power\n0,00:00,24:00,1\n", encoding="utf-8")
     with pytest.raises(ValueError, match="Заповніть"):
         import_week(str(source))
+
+
+def test_running_task_keeps_current_time_before_new_priority_task():
+    device = Device("Активний", power=3000)
+    other = Device("Терміновий", power=3000)
+    active = task(device, priority=1, status="running")
+    urgent = task(other, priority=5)
+    result = build_plan([device, other], [urgent, active], [[True] * 48 for _ in range(7)], NOW)
+    by_task = {segment.task_id: segment for segment in result.segments}
+    assert by_task[active.id].start == NOW
+    assert by_task[urgent.id].start == by_task[active.id].end
+
+
+def test_running_task_is_not_silently_moved_past_outage():
+    device = Device("Активний")
+    active = task(device, status="running")
+    week = [[True] * 48 for _ in range(7)]
+    week[0][16] = False
+    result = build_plan([device], [active], week, NOW)
+    assert active.id in result.conflicts
+    assert not result.segments
+
+
+def test_parallel_small_loads_share_same_window():
+    a, b = Device("Телефон", power=20), Device("Ноутбук", power=65)
+    result = build_plan([a, b], [task(a), task(b)], [[True] * 48 for _ in range(7)], NOW)
+    assert result.segments[0].start == result.segments[1].start
+
+
+def test_week_uses_local_day_instead_of_utc_day():
+    from zoneinfo import ZoneInfo
+
+    local_now = datetime(2026, 11, 17, 0, tzinfo=ZoneInfo("Europe/Kyiv"))
+    device = Device("Нічний")
+    value = Task(device.id, "Нічна робота", 30, (local_now + timedelta(minutes=30)).isoformat())
+    week = [[False] * 48 for _ in range(7)]
+    week[1][0] = True
+    result = build_plan([device], [value], week, local_now)
+    assert not result.conflicts
+    assert result.segments[0].start == local_now
+
+
+def test_invalid_task_is_rejected_before_persisting(tmp_path):
+    device = Device("Пристрій")
+    invalid = task(device, minutes=-10)
+    store = Store(tmp_path / "invalid.sqlite3")
+    with pytest.raises(ValueError, match="тривалість"):
+        store.save(invalid)
+    assert not store.tasks()
+    store.close()
