@@ -3,6 +3,7 @@
 import csv
 import json
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime
 from dataclasses import asdict
 from pathlib import Path
@@ -67,7 +68,7 @@ class Store:
         from uuid import uuid4
         temporary = destination.with_name(destination.name + "." + uuid4().hex + ".tmp")
         try:
-            with sqlite3.connect(temporary) as target:
+            with closing(sqlite3.connect(temporary)) as target:
                 self.connection.backup(target)
             temporary.replace(destination)
         finally:
@@ -78,7 +79,7 @@ class Store:
         source = source.resolve()
         if source == self.path or not source.is_file():
             raise ValueError("Оберіть наявну резервну копію, відмінну від робочої бази")
-        with sqlite3.connect(source.as_uri() + "?mode=ro", uri=True) as backup:
+        with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as backup:
             if backup.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise ValueError("Резервна копія пошкоджена")
             if backup.execute("PRAGMA user_version").fetchone()[0] != 1:
