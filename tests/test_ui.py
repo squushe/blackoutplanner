@@ -1,12 +1,13 @@
 import os
 import time
+import gc
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QThreadPool
+from PySide6.QtCore import QThreadPool, QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication, QDialog
 
 from blackout_planner.domain import Device
@@ -27,6 +28,14 @@ def app():
     configure_application(instance)
     yield instance
     QThreadPool.globalInstance().waitForDone()
+    for widget in list(instance.topLevelWidgets()):
+        if isinstance(widget, MainWindow):
+            widget.allow_exit = True
+        widget.close()
+        widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    instance.processEvents()
+    gc.collect()
 
 
 def wait_plan(app, window):

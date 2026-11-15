@@ -3,6 +3,7 @@
 import copy
 import json
 import math
+import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -43,7 +44,10 @@ from PySide6.QtWidgets import (
 
 from .calendar_export import export_ics
 from .domain import BatteryProfile, Device, Task, blank_week, build_plan, power_at, validate_week
+from .notifications import Notice, build_notices, due_notices, upcoming_text
+from .notifier import Notifier
 from .panels import OutageDialog, ReservePanel
+from .platform_services import Autostart
 from .storage import import_week
 
 STYLE = """
@@ -452,11 +456,19 @@ class Onboarding(QWizard):
         self.notifications = QCheckBox("Сповіщати за 30 і 10 хвилин до відключення")
         self.notifications.setChecked(True)
         layout.addWidget(self.notifications)
+        self.autostart = Autostart(store.path.parent)
+        self.autostart_checkbox = QCheckBox("Запускати Blackout Planner разом із системою")
+        self.autostart_checkbox.setChecked(self.autostart.enabled())
+        if self.autostart.last_error:
+            self.autostart_checkbox.setEnabled(False)
+            self.autostart_checkbox.setToolTip(self.autostart.last_error)
+        layout.addWidget(self.autostart_checkbox)
         label = QLabel(
             "Застосунок працює локально. Закриття вікна залишає його в треї, "
             "якщо трей доступний. Для припинення роботи оберіть «Вихід».\n\n"
-            "Сповіщення залежать від налаштувань ОС. Автозапуск буде додано "
-            "в наступному етапі. Фактичне живлення та прогрес ви підтверджуєте самі."
+            "Сповіщення залежать від налаштувань ОС. Фактичне живлення та прогрес "
+            "ви підтверджуєте самі. Клік по системному повідомленню відкриває план; "
+            "усі нагадування також зберігаються у вкладці «Сповіщення»."
         )
         label.setWordWrap(True)
         layout.addWidget(label)
@@ -491,6 +503,12 @@ class Onboarding(QWizard):
         )
 
     def accept(self):
+        try:
+            if self.autostart_checkbox.isChecked() != self.autostart.enabled():
+                self.autostart.set_enabled(self.autostart_checkbox.isChecked())
+        except OSError as error:
+            QMessageBox.warning(self, "Автозапуск не змінено", str(error))
+            return
         for value in [*self.devices, *self.tasks]:
             self.store.save(value)
         self.store.set("week", self.schedule.editor.week)
@@ -635,7 +653,11 @@ class MainWindow(QMainWindow):
         self.revision = 0
         self.plan = None
         self.workers = {}
-        self.notified = set()
+        self.last_check = now()
+        self.last_tick = now()
+        self.startup_notice = True
+        self.current_notice = None
+        self.autostart = Autostart(store.path.parent)
         self.allow_exit = False
         self.setWindowTitle("Blackout Planner")
         self.resize(1220, 850)
@@ -671,6 +693,7 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(self.cards_widget)
+        self.cards_scroll = scroll
         today_layout.addWidget(scroll, 2)
         self.tabs.addTab(today, "Сьогодні")
         self.editor = ScheduleEditor(store.get("week", blank_week()))
@@ -699,6 +722,22 @@ class MainWindow(QMainWindow):
         self.reserve_panel = ReservePanel(store)
         self.reserve_panel.saved.connect(self.replan)
         self.tabs.addTab(self.reserve_panel, "Автономність")
+        inbox = QWidget()
+        inbox_layout = QVBoxLayout(inbox)
+        self.inbox = QListWidget()
+        self.inbox.currentRowChanged.connect(self.select_notice)
+        inbox_layout.addWidget(self.inbox)
+        self.notice_detail = QLabel(
+            "Нагадування зберігаються тут, навіть якщо ОС приховала повідомлення."
+        )
+        self.notice_detail.setWordWrap(True)
+        inbox_layout.addWidget(self.notice_detail)
+        actions = QHBoxLayout()
+        button("Відкрити задачу / план", lambda: self.notice_action("open"), actions)
+        button("Перенести на завтра", lambda: self.notice_action("tomorrow"), actions)
+        button("Підтвердити виконання", lambda: self.notice_action("done"), actions)
+        inbox_layout.addLayout(actions)
+        self.tabs.addTab(inbox, "Сповіщення")
         settings = QWidget()
         form = QFormLayout(settings)
         self.power = number(1, 100000, store.get("power_limit", 3500), " Вт")
@@ -708,6 +747,18 @@ class MainWindow(QMainWindow):
         self.notifications = QCheckBox("Увімкнути сповіщення")
         self.notifications.setChecked(store.get("notifications", True))
         form.addRow(self.notifications)
+        self.autostart_checkbox = QCheckBox("Запускати Blackout Planner разом із системою")
+        self.autostart_checkbox.setChecked(self.autostart.enabled())
+        if self.autostart.last_error:
+            self.autostart_checkbox.setEnabled(False)
+            self.autostart_checkbox.setToolTip(self.autostart.last_error)
+        form.addRow(self.autostart_checkbox)
+        self.algorithm = QComboBox()
+        self.algorithm.addItems(
+            ["Базова евристика priority / EDF", "Евристика з локальною DP оптимізацією"]
+        )
+        self.algorithm.setCurrentIndex(self.store.get("algorithm", "greedy") == "dp")
+        form.addRow("Алгоритм", self.algorithm)
         save = QPushButton("Зберегти налаштування")
         save.clicked.connect(self.save_settings)
         form.addRow(save)
@@ -750,7 +801,8 @@ class MainWindow(QMainWindow):
                 else None
             )
         )
-        self.tray.messageClicked.connect(self.show_from_tray)
+        self.notifier = Notifier(self.tray, self)
+        self.notifier.activated.connect(self.handle_notice_action)
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray.show()
         self.timer = QTimer(self)
@@ -758,7 +810,9 @@ class MainWindow(QMainWindow):
         self.timer.start(30000)
         self.refresh_devices()
         self.refresh_overrides()
+        self.refresh_inbox()
         self.replan()
+        QTimer.singleShot(1000, self.tick)
 
     def planning_arguments(self, tasks=None):
         values = self.store.tasks() if tasks is None else copy.deepcopy(tasks)
@@ -865,6 +919,7 @@ class MainWindow(QMainWindow):
             event.ignore()
         else:
             self.timer.stop()
+            self.notifier.shutdown()
             self.tray.hide()
             event.accept()
 
@@ -882,9 +937,16 @@ class MainWindow(QMainWindow):
         if self.background.value() > self.power.value():
             QMessageBox.warning(self, "Перевірте потужність", "Фонове споживання перевищує ліміт")
             return
+        try:
+            if self.autostart_checkbox.isChecked() != self.autostart.enabled():
+                self.autostart.set_enabled(self.autostart_checkbox.isChecked())
+        except OSError as error:
+            QMessageBox.warning(self, "Автозапуск не змінено", str(error))
+            return
         self.store.set("power_limit", self.power.value())
         self.store.set("background_power", self.background.value())
         self.store.set("notifications", self.notifications.isChecked())
+        self.store.set("algorithm", "dp" if self.algorithm.currentIndex() else "greedy")
         self.replan()
 
     def add_device(self):
@@ -950,6 +1012,7 @@ class MainWindow(QMainWindow):
             return
         self.plan = plan
         self.render()
+        self.process_notices()
 
     def plan_failed(self, revision, message):
         self.workers.pop(revision, None)
@@ -1002,6 +1065,7 @@ class MainWindow(QMainWindow):
         }
         for task in reversed(tasks):
             card = QFrame()
+            card.setProperty("task_id", task.id)
             card.setObjectName("card")
             layout = QVBoxLayout(card)
             label = QLabel(task.name)
@@ -1120,27 +1184,125 @@ class MainWindow(QMainWindow):
         self.replan()
 
     def tick(self):
-        self.replan()
-        if not self.store.get("notifications", True) or not self.tray.isVisible():
+        if self.allow_exit:
             return
         now = self.now()
-        week = self.store.get("week", blank_week())
-        for minutes in (10, 30):
-            boundary = (now + timedelta(minutes=minutes)).replace(second=0, microsecond=0)
-            before = boundary - timedelta(minutes=1)
-            if (
-                boundary.minute % 30 == 0
-                and week[before.weekday()][before.hour * 2 + before.minute // 30] is True
-                and week[boundary.weekday()][boundary.hour * 2 + boundary.minute // 30] is False
-            ):
-                key = (boundary.isoformat(), minutes, json.dumps(week))
-                if key not in self.notified:
-                    self.notified.add(key)
-                    self.tray.showMessage(
-                        "Наближається відключення",
-                        f"За графіком світло зникне о {boundary:%H:%M}. "
-                        f"Залишилося {minutes} хвилин.",
+        if now - self.last_tick > timedelta(minutes=2):
+            # Час сну не зараховується як підтверджена робота пристроїв.
+            for task in self.store.tasks():
+                if task.status == "running" and task.started_at:
+                    elapsed = max(
+                        0,
+                        int(
+                            (
+                                self.last_tick - datetime.fromisoformat(task.started_at)
+                            ).total_seconds()
+                            // 60
+                        ),
                     )
+                    task.completed = min(task.minutes, task.completed + elapsed)
+                    task.status = "paused"
+                    task.started_at = None
+                    task.locked_segments = []
+                    self.store.save(task)
+            self.startup_notice = True
+        self.last_tick = now
+        if not self.workers:
+            self.replan()
+
+    def process_notices(self):
+        now = self.now()
+        previous = self.last_check
+        self.last_check = now
+        if not self.store.get("notifications", True):
+            self.startup_notice = False
+            return
+        history = self.store.get("notification_history", {})
+        notices = build_notices(
+            self.store.get("week", blank_week()),
+            self.store.get("overrides", []),
+            self.plan,
+            self.store.tasks(),
+            self.store.devices(),
+            now,
+        )
+        selected = due_notices(notices, now, previous, history)
+        if self.startup_notice:
+            self.startup_notice = False
+            current = power_at(
+                self.store.get("week", blank_week()), now, self.store.get("overrides", [])
+            )
+            summary = Notice(
+                "summary",
+                now.replace(second=0, microsecond=0),
+                "Поточний план",
+                (
+                    "За актуальними даними: є світло. "
+                    if current
+                    else "За актуальними даними: немає світла. "
+                )
+                + "План на 3 години: "
+                + upcoming_text(self.plan, self.store.tasks(), now)
+                + (f". Конфліктів: {len(self.plan.conflicts)}" if self.plan.conflicts else ""),
+            )
+            if summary.key not in history:
+                self.deliver_notice(summary)
+            # Історичні події не відтворюємо при запуску чи відновленні.
+            selected = [notice for notice in selected if notice.kind == "conflict"]
+        for notice in selected:
+            self.deliver_notice(notice)
+
+    def deliver_notice(self, notice):
+        history = self.store.get("notification_history", {})
+        if notice.key in history:
+            return
+        history[notice.key] = self.now().isoformat()
+        self.store.set("notification_history", dict(list(history.items())[-5000:]))
+        entries = self.store.get("notification_inbox", [])
+        entries.append(
+            {
+                "title": notice.title,
+                "body": notice.body,
+                "kind": notice.kind,
+                "task_id": notice.object_id.split(":")[0]
+                if notice.kind in {"conflict", "finish"}
+                else "",
+                "time": self.now().isoformat(),
+            }
+        )
+        self.store.set("notification_inbox", entries[-200:])
+        self.refresh_inbox()
+        self.notifier.send(notice)
+
+    def refresh_inbox(self):
+        self.inbox.clear()
+        for entry in reversed(self.store.get("notification_inbox", [])):
+            self.inbox.addItem(
+                f"{datetime.fromisoformat(entry['time']):%d.%m %H:%M} · {entry['title']}"
+            )
+
+    def select_notice(self, row):
+        entries = list(reversed(self.store.get("notification_inbox", [])))
+        self.current_notice = entries[row] if 0 <= row < len(entries) else None
+        if self.current_notice:
+            self.notice_detail.setText(self.current_notice["body"])
+
+    def notice_action(self, action):
+        if self.current_notice:
+            self.handle_notice_action(self.current_notice["task_id"], action)
+
+    def handle_notice_action(self, task_id, action):
+        task = next((task for task in self.store.tasks() if task.id == task_id), None)
+        if action in {"tomorrow", "done"} and task and task.status not in {"done", "cancelled"}:
+            self.task_action(task, action)
+        else:
+            self.show_from_tray()
+            self.tabs.setCurrentIndex(0)
+            for index in range(self.cards.count()):
+                widget = self.cards.itemAt(index).widget()
+                if widget and widget.property("task_id") == task_id:
+                    self.cards_scroll.ensureWidgetVisible(widget)
+                    break
 
     def export_plan(self):
         if not self.plan:
@@ -1192,7 +1354,7 @@ class MainWindow(QMainWindow):
             try:
                 self.store.backup(Path(path))
                 self.statusBar().showMessage("Резервну копію збережено", 5000)
-            except (OSError, ValueError, __import__("sqlite3").Error) as error:
+            except (OSError, ValueError, sqlite3.Error) as error:
                 QMessageBox.warning(self, "Копію не створено", str(error))
 
     def restore_data(self):
@@ -1210,7 +1372,7 @@ class MainWindow(QMainWindow):
             return
         try:
             safety = self.store.restore(Path(path))
-        except (OSError, ValueError, TypeError, KeyError, __import__("sqlite3").Error) as error:
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as error:
             QMessageBox.warning(self, "Відновлення не виконано", str(error))
             return
         self.editor.week = self.store.get("week", blank_week())
@@ -1218,6 +1380,12 @@ class MainWindow(QMainWindow):
         self.power.setValue(self.store.get("power_limit", 3500))
         self.background.setValue(self.store.get("background_power", 0))
         self.notifications.setChecked(self.store.get("notifications", True))
+        self.algorithm.setCurrentIndex(self.store.get("algorithm", "greedy") == "dp")
+        for task in self.store.tasks():
+            if task.status == "running":
+                task.status = "paused"
+                task.started_at = None
+                self.store.save(task)
         profile = BatteryProfile(**self.store.get("battery", {}))
         panel = self.reserve_panel
         for widget, value in [
@@ -1232,5 +1400,6 @@ class MainWindow(QMainWindow):
         panel.transfer.setChecked(profile.continuous_transfer)
         self.refresh_devices()
         self.refresh_overrides()
+        self.refresh_inbox()
         self.replan()
         QMessageBox.information(self, "Дані відновлено", f"Страхова копія: {safety}")

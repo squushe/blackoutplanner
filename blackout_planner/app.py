@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from PySide6.QtCore import QStandardPaths, QThreadPool
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
+from .instance import SingleInstance
 from .storage import Store
 from .ui import MainWindow, Onboarding, configure_application
 
@@ -16,6 +17,9 @@ from .ui import MainWindow, Onboarding, configure_application
 def main():
     parser = argparse.ArgumentParser(description="Blackout Planner")
     parser.add_argument("--data-dir", type=Path, help="Папка локальних даних")
+    parser.add_argument(
+        "--background", action="store_true", help="Запустити у треї, якщо він доступний"
+    )
     arguments = parser.parse_args()
     app = QApplication(sys.argv[:1])
     app.setApplicationName("BlackoutPlanner")
@@ -24,6 +28,9 @@ def main():
     folder = arguments.data_dir or Path(
         QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)
     )
+    instance = SingleInstance(folder)
+    if not instance.acquire(activate=not arguments.background):
+        return
     store = Store(folder / "planner.sqlite3")
     timezone = ZoneInfo(store.get("timezone", "Europe/Kyiv"))
 
@@ -35,7 +42,6 @@ def main():
         if wizard.exec() != QDialog.DialogCode.Accepted:
             store.close()
             return
-    window = MainWindow(store, now)
     recovered = False
     for task in store.tasks():
         if task.status == "running":
@@ -43,9 +49,11 @@ def main():
             task.started_at = None
             store.save(task)
             recovered = True
-    if recovered:
-        window.replan()
-    window.show()
+    window = MainWindow(store, now)
+    instance.activated.connect(window.show_from_tray)
+    if not arguments.background or not window.tray.isVisible():
+        window.show()
+    app.applicationStateChanged.connect(lambda state: window.tick())
     if recovered:
         QMessageBox.information(
             window,
@@ -57,6 +65,7 @@ def main():
     app.exec()
     QThreadPool.globalInstance().waitForDone()
     store.close()
+    instance.release()
 
 
 if __name__ == "__main__":
