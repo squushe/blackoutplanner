@@ -12,6 +12,7 @@ from PySide6.QtCore import QObject, QRectF, QRunnable, Qt, QThreadPool, QTimer, 
 from PySide6.QtGui import QAction, QColor, QFont, QFontDatabase, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDateTimeEdit,
@@ -24,13 +25,16 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLayout,
     QLineEdit,
     QListWidget,
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QStyle,
     QSystemTrayIcon,
@@ -51,28 +55,7 @@ from .panels import OutageDialog, ReservePanel
 from .platform_services import Autostart
 from .progress import progress_since_start
 from .storage import import_week
-
-STYLE = """
-QWidget { font-family: 'Segoe UI'; font-size: 10pt; color: #dae3ee; }
-QMainWindow, QDialog, QWizard { background: #101925; }
-QWizardPage, QWizard > QWidget { background: #101925; }
-QTabWidget::pane { border: 0; background: #101925; }
-QTabBar::tab { background: #1c293b; padding: 12px 22px; margin-right: 5px; }
-QTabBar::tab:selected { background: #285a56; color: #8aead0; }
-QPushButton { background: #244b49; border: 1px solid #38756b;
- border-radius: 7px; padding: 8px 14px; }
-QPushButton:hover { background: #30655e; }
-QPushButton:disabled { color: #728096; background: #1b2738; }
-QLineEdit, QSpinBox, QDoubleSpinBox, QDateTimeEdit, QComboBox {
- background: #1c293b; border: 1px solid #3a4b61; border-radius: 5px; padding: 6px; }
-QListWidget, QTableWidget { background: #142131; border: 1px solid #34465d; }
-QHeaderView::section { background: #223249; color: #c4d1e2; padding: 6px; }
-QFrame#card { background: #1b2a3c; border: 1px solid #30465f; border-radius: 9px; }
-QLabel#muted { color: #9cacc0; }
-QLabel#title { font-size: 23pt; font-weight: 650; }
-QScrollArea { border: 0; background: transparent; }
-QToolTip { background: #23374b; color: white; border: 1px solid #5d7890; }
-"""
+from .theme import STYLE, icon
 
 
 def configure_application(app):
@@ -85,14 +68,14 @@ def configure_application(app):
     app.setFont(QFont("Segoe UI", 10))
     palette = QPalette()
     for role, color in [
-        (QPalette.ColorRole.Window, "#101925"),
-        (QPalette.ColorRole.WindowText, "#dae3ee"),
-        (QPalette.ColorRole.Base, "#142131"),
-        (QPalette.ColorRole.AlternateBase, "#1b2a3c"),
-        (QPalette.ColorRole.Text, "#dae3ee"),
-        (QPalette.ColorRole.Button, "#244b49"),
-        (QPalette.ColorRole.ButtonText, "#dae3ee"),
-        (QPalette.ColorRole.Highlight, "#357d71"),
+        (QPalette.ColorRole.Window, "#f4f7f6"),
+        (QPalette.ColorRole.WindowText, "#243b38"),
+        (QPalette.ColorRole.Base, "#ffffff"),
+        (QPalette.ColorRole.AlternateBase, "#f1f6f1"),
+        (QPalette.ColorRole.Text, "#243b38"),
+        (QPalette.ColorRole.Button, "#ffffff"),
+        (QPalette.ColorRole.ButtonText, "#3e5d50"),
+        (QPalette.ColorRole.Highlight, "#528760"),
         (QPalette.ColorRole.HighlightedText, "#ffffff"),
     ]:
         palette.setColor(role, QColor(color))
@@ -102,6 +85,7 @@ def configure_application(app):
 
 def button(text, callback, layout):
     value = QPushButton(text)
+    value.setCursor(Qt.CursorShape.PointingHandCursor)
     value.clicked.connect(callback)
     layout.addWidget(value)
     return value
@@ -156,10 +140,10 @@ class ScheduleEditor(QWidget):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 item.setBackground(
                     QColor(
-                        "#286958" if value is True else "#3d4756" if value is False else "#665327"
+                        "#dcefdc" if value is True else "#eef1ef" if value is False else "#fff3d8"
                     )
                 )
-                item.setForeground(QColor("#ffffff"))
+                item.setForeground(QColor("#427450" if value is True else "#7f8e85"))
                 self.table.setItem(slot, day, item)
         self.changed.emit()
 
@@ -576,7 +560,7 @@ class Timeline(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         width = self.width() - 150
         left = 115
-        painter.fillRect(self.rect(), QColor("#142131"))
+        painter.fillRect(self.rect(), QColor("#ffffff"))
         self.hits = []
         day = self.now.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -591,17 +575,19 @@ class Timeline(QWidget):
                 28,
                 math.ceil(width / 1440),
                 20,
-                QColor("#2d8d73" if power is True else "#455265"),
+                QColor("#b8dba1" if power is True else "#eef2ee"),
             )
-        painter.setPen(QColor("#a8b9cc"))
+        painter.setPen(QColor("#84998b"))
         for hour in range(0, 25, 3):
             position = int(left + width * hour / 24)
             painter.drawText(position - 12, 19, f"{hour:02}:00")
+            painter.setPen(QPen(QColor("#e8efe8"), 1, Qt.PenStyle.DashLine))
             painter.drawLine(position, 50, position, self.height() - 10)
+            painter.setPen(QColor("#84998b"))
         painter.drawText(10, 43, "Живлення")
         for row, task in enumerate(self.tasks):
             y = 68 + row * 36
-            painter.setPen(QColor("#dae3ee"))
+            painter.setPen(QColor("#5e7867"))
             painter.drawText(
                 10,
                 y + 17,
@@ -617,14 +603,10 @@ class Timeline(QWidget):
                         self.hits.append((rect, segment))
                         if self.drag and self.drag[0] == segment:
                             begin += self.drag[2] - self.drag[1]
-                        painter.fillRect(
-                            int(begin),
-                            y,
-                            int(rect.width()),
-                            23,
-                            QColor("#c79448" if task.locked_segments else "#4ba997"),
-                        )
-        painter.setPen(QPen(QColor("#f5ba65"), 2))
+                        painter.setPen(Qt.PenStyle.NoPen)
+                        painter.setBrush(QColor("#e9c880" if task.locked_segments else "#79ab78"))
+                        painter.drawRoundedRect(QRectF(begin, y, rect.width(), 23), 5, 5)
+        painter.setPen(QPen(QColor("#3d7952"), 2))
         painter.drawLine(int(x(self.now)), 25, int(x(self.now)), self.height() - 8)
 
 
@@ -662,35 +644,155 @@ class MainWindow(QMainWindow):
         self.autostart = Autostart(store.path.parent)
         self.allow_exit = False
         self.setWindowTitle("Blackout Planner")
-        self.resize(1220, 850)
-        self.setMinimumSize(920, 650)
+        self.resize(1380, 920)
+        self.setMinimumSize(1080, 760)
         root = QWidget()
         self.setCentralWidget(root)
-        layout = QVBoxLayout(root)
-        layout.setContentsMargins(24, 20, 24, 20)
+        shell = QHBoxLayout(root)
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setSpacing(0)
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(205)
+        side = QVBoxLayout(sidebar)
+        side.setContentsMargins(18, 28, 18, 25)
+        side.setSpacing(7)
+        logo = QLabel()
+        logo.setPixmap(icon("bolt", "#c8ed9b", 32).pixmap(32, 32))
+        side.addWidget(logo)
+        brand = QLabel("Blackout\nPlanner")
+        brand.setObjectName("brand")
+        side.addWidget(brand)
+        tagline = QLabel("Планування під відключення")
+        tagline.setWordWrap(True)
+        tagline.setObjectName("brandSub")
+        side.addWidget(tagline)
+        side.addSpacing(32)
+        caption = QLabel("РОБОЧИЙ ПРОСТІР")
+        caption.setObjectName("navCaption")
+        side.addWidget(caption)
+        self.nav_group = QButtonGroup(self)
+        self.page_names = [
+            "План на сьогодні",
+            "Графік живлення",
+            "Мої пристрої",
+            "Резерв та автономність",
+            "Центр сповіщень",
+            "Налаштування",
+        ]
+        for index, (name, glyph) in enumerate(
+            zip(
+                [
+                    "Огляд дня",
+                    "Графік живлення",
+                    "Пристрої",
+                    "Автономність",
+                    "Сповіщення",
+                    "Налаштування",
+                ],
+                ["today", "calendar", "devices", "battery", "bell", "settings"],
+            )
+        ):
+            item = QPushButton(name)
+            item.setObjectName("nav")
+            item.setIcon(icon(glyph))
+            item.setCheckable(True)
+            item.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.nav_group.addButton(item, index)
+            side.addWidget(item)
+        self.nav_group.button(0).setChecked(True)
+        side.addStretch()
+        footer = QLabel("ОФЛАЙН-РЕЖИМ\n\nЛокально · без хмари")
+        footer.setObjectName("brandSub")
+        side.addWidget(footer)
+        shell.addWidget(sidebar)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(30, 28, 30, 20)
+        layout.setSpacing(16)
+        shell.addWidget(content, 1)
         header = QHBoxLayout()
-        title = QLabel("Blackout Planner")
-        title.setObjectName("title")
-        header.addWidget(title)
+        self.page_title = QLabel(self.page_names[0])
+        self.page_title.setObjectName("title")
+        header.addWidget(self.page_title)
         header.addStretch()
-        button("+ Нова задача", self.add_task, header)
         button("Уточнити світло", self.correct_power, header)
+        button("+ Нова задача", self.add_task, header).setObjectName("primary")
         layout.addLayout(header)
         self.status = QLabel()
         self.status.setObjectName("muted")
         layout.addWidget(self.status)
+        self.metrics_widget = QWidget()
+        metrics = QHBoxLayout(self.metrics_widget)
+        metrics.setContentsMargins(0, 0, 0, 0)
+        metrics.setSpacing(14)
+        self.metric_labels = []
+        for caption, hint in [
+            ("ЕЛЕКТРОПОСТАЧАННЯ", "За актуальним графіком"),
+            ("ЗАДАЧІ НА ДЕНЬ", "У вашому плані"),
+            ("РЕЗЕРВ ЕНЕРГІЇ", "Доступно вище мінімуму"),
+        ]:
+            card = QFrame()
+            card.setObjectName("metric")
+            box = QVBoxLayout(card)
+            box.setContentsMargins(18, 16, 18, 16)
+            box.setSpacing(6)
+            name, value, description = QLabel(caption), QLabel("—"), QLabel(hint)
+            name.setObjectName("metricCaption")
+            value.setObjectName("metricValue")
+            description.setObjectName("metricHint")
+            for label in (name, value, description):
+                box.addWidget(label)
+            metrics.addWidget(card, 1)
+            self.metric_labels.append((value, description))
+        layout.addWidget(self.metrics_widget)
         self.tabs = QTabWidget()
+        self.tabs.tabBar().hide()
+        self.nav_group.idClicked.connect(self.tabs.setCurrentIndex)
+        self.tabs.currentChanged.connect(self.navigate)
         layout.addWidget(self.tabs)
         today = QWidget()
         today_layout = QVBoxLayout(today)
+        today_layout.setContentsMargins(0, 0, 0, 0)
+        today_layout.setSpacing(14)
+        timeline_panel = QFrame()
+        self.timeline_panel = timeline_panel
+        timeline_panel.setObjectName("timelinePanel")
+        timeline_box = QVBoxLayout(timeline_panel)
+        timeline_box.setContentsMargins(16, 16, 16, 12)
+        timeline_heading = QHBoxLayout()
+        title = QLabel("Розклад дня")
+        title.setObjectName("sectionTitle")
+        timeline_heading.addWidget(title)
+        timeline_heading.addStretch()
+        legend = QLabel(
+            '<span style="color:#73a66a">●</span> Живлення　 '
+            '<span style="color:#a7b5ab">●</span> Відключення　 ↔ Перетягніть задачу'
+        )
+        legend.setObjectName("muted")
+        timeline_heading.addWidget(legend)
+        timeline_box.addLayout(timeline_heading)
         self.timeline = Timeline()
         self.timeline.move_requested.connect(self.move_segment)
         timeline_scroll = QScrollArea()
         timeline_scroll.setWidgetResizable(True)
         timeline_scroll.setWidget(self.timeline)
-        today_layout.addWidget(timeline_scroll, 1)
+        timeline_box.addWidget(timeline_scroll)
+        today_layout.addWidget(timeline_panel, 1)
+        task_heading = QHBoxLayout()
+        title = QLabel("Ваші задачі")
+        title.setObjectName("sectionTitle")
+        task_heading.addWidget(title)
+        task_heading.addStretch()
+        self.task_count = QLabel()
+        self.task_count.setObjectName("muted")
+        task_heading.addWidget(self.task_count)
+        today_layout.addLayout(task_heading)
         self.cards_widget = QWidget()
         self.cards = QVBoxLayout(self.cards_widget)
+        self.cards.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        self.cards.setContentsMargins(0, 0, 6, 0)
+        self.cards.setSpacing(12)
         self.cards.setAlignment(Qt.AlignmentFlag.AlignTop)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -821,6 +923,11 @@ class MainWindow(QMainWindow):
         self.refresh_inbox()
         self.replan()
         QTimer.singleShot(1000, self.tick)
+
+    def navigate(self, index):
+        self.page_title.setText(self.page_names[index])
+        self.metrics_widget.setVisible(index == 0)
+        self.nav_group.button(index).setChecked(True)
 
     def planning_arguments(self, tasks=None):
         values = self.store.tasks() if tasks is None else copy.deepcopy(tasks)
@@ -1111,14 +1218,36 @@ class MainWindow(QMainWindow):
                 item.widget().deleteLater()
         tasks = self.store.tasks()
         active = [task for task in tasks if task.status not in {"done", "cancelled"}]
+        self.task_count.setText(f"Активних: {len(active)} · Усього: {len(tasks)}")
+        self.metric_labels[0][0].setText(
+            "Є світло" if power is True else "Без світла" if power is False else "Немає даних"
+        )
+        self.metric_labels[0][1].setText(
+            "Підтверджено вами" if actual else "За графіком електропостачання"
+        )
+        self.metric_labels[1][0].setText(f"{len(active)} активних")
+        self.metric_labels[1][1].setText(
+            f"{len(self.plan.conflicts)} потребують уваги"
+            if self.plan.conflicts
+            else "Усе готово до вашого дня"
+        )
         self.timeline.plan = self.plan
         self.timeline.tasks = active
         self.timeline.week = week
         self.timeline.overrides = self.store.get("overrides", [])
         self.timeline.now = now
         self.timeline.setMinimumHeight(max(140, 85 + 36 * len(active)))
+        self.timeline_panel.setMinimumHeight(max(140, 85 + 36 * min(len(active), 4)) + 68)
         self.timeline.update()
         profile = self.planning_arguments()["battery"]
+        self.metric_labels[2][0].setText(
+            f"{profile.usable_wh:.0f} Вт·год" if profile.enabled else "Не підключено"
+        )
+        self.metric_labels[2][1].setText(
+            f"Заряд {profile.charge:.0f}% · мінімум {profile.reserve:.0f}%"
+            if profile.enabled
+            else "Налаштуйте на вкладці «Автономність»"
+        )
         self.reserve_panel.plan_result.setText(
             f"План використає резерв: {self.plan.reserve_used_wh:.1f} Вт·год. "
             f"Доступний залишок вище мінімуму: {max(0, profile.usable_wh - self.plan.reserve_used_wh):.1f} Вт·год."
@@ -1139,9 +1268,33 @@ class MainWindow(QMainWindow):
             card.setProperty("task_id", task.id)
             card.setObjectName("card")
             layout = QVBoxLayout(card)
+            layout.setContentsMargins(18, 15, 18, 15)
+            layout.setSpacing(10)
+            heading = QHBoxLayout()
+            device = next((d for d in self.store.devices() if d.id == task.device_id), None)
+            glyph = QLabel()
+            glyph.setPixmap(
+                icon(
+                    "battery" if device and device.kind == "battery" else "devices", "#639274", 24
+                ).pixmap(24, 24)
+            )
+            heading.addWidget(glyph)
             label = QLabel(task.name)
-            label.setStyleSheet("font-weight: 650; font-size: 12pt")
-            layout.addWidget(label)
+            label.setStyleSheet("font-weight: 650; font-size: 11pt; color: #254638")
+            heading.addWidget(label, 1)
+            badge = QLabel(
+                "Конфлікт"
+                if task.id in self.plan.conflicts
+                else "У роботі"
+                if task.status == "running"
+                else states.get(task.status, task.status)
+            )
+            badge.setObjectName("badge")
+            badge.setProperty(
+                "state", "conflict" if task.id in self.plan.conflicts else task.status
+            )
+            heading.addWidget(badge)
+            layout.addLayout(heading)
             info = states.get(task.status, task.status)
             segments = [s for s in self.plan.segments if s.task_id == task.id]
             if task.id in self.plan.conflicts:
@@ -1158,16 +1311,23 @@ class MainWindow(QMainWindow):
                 f" · пріоритет {task.priority}"
             )
             detail = QLabel(info)
+            detail.setObjectName("muted")
             detail.setWordWrap(True)
             layout.addWidget(detail)
+            if task.completed:
+                progress = QProgressBar()
+                progress.setRange(0, task.minutes)
+                progress.setValue(task.completed)
+                progress.setTextVisible(False)
+                layout.addWidget(progress)
             if task.status not in {"done", "cancelled"}:
                 actions = QHBoxLayout()
                 if task.status != "running":
                     button(
-                        "Почати / продовжити",
+                        "Продовжити" if task.completed else "Почати",
                         lambda checked=False, t=task: self.task_action(t, "running"),
                         actions,
-                    )
+                    ).setObjectName("primary")
                 else:
                     button(
                         "Пауза",
@@ -1182,11 +1342,12 @@ class MainWindow(QMainWindow):
                     lambda checked=False, t=task: self.task_action(t, "tomorrow"),
                     actions,
                 )
+                actions.addStretch()
                 button(
                     "Скасувати",
                     lambda checked=False, t=task: self.task_action(t, "cancelled"),
                     actions,
-                )
+                ).setObjectName("quiet")
                 layout.addLayout(actions)
                 if task.locked_segments:
                     button(
@@ -1194,6 +1355,10 @@ class MainWindow(QMainWindow):
                         lambda checked=False, t=task: self.unlock_task(t),
                         layout,
                     )
+            card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+            card.ensurePolished()
+            card.layout().activate()
+            card.setMinimumHeight(card.sizeHint().height())
             self.cards.addWidget(card)
 
     def task_action(self, task, action):
